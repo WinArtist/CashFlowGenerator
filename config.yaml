@@ -1,0 +1,204 @@
+app:
+  period_value: 5月
+  decimal_places: 2
+  validation_threshold: 0.01
+company:
+  banks:
+  - name: P银行
+file:
+  detail_path: C:/Users/chqte/Desktop/明细账_上海微誉信息技术有限公司_2026年第3期.xlsx
+  cashflow_file: C:/Users/chqte/Music/现金流表_20260620_184251.xlsx
+income_rules: []
+expense_rules:
+- category: 商品采购
+  contra_keywords:
+  - 付供应商款
+  - 采购款
+  - 货款
+  - 京东采购款
+  summary_keywords: []
+  enabled: true
+- category: 运费
+  contra_keywords:
+  - 运费
+  - 货拉拉
+  - 闪送
+  - 跨越
+  - 物流
+  - 快递
+  - 顺丰
+  summary_keywords: []
+  enabled: true
+- category: 财务_手续费
+  contra_keywords:
+  - 银行手续费
+  - 手续费
+  summary_keywords: []
+  enabled: true
+- category: 管理_通讯费
+  contra_keywords:
+  - 话费充值
+  - 手机话费
+  - 通讯费
+  summary_keywords: []
+  enabled: true
+- category: 管理_办公费
+  contra_keywords:
+  - 饮用水
+  - 办公用品
+  - 文具
+  - 打印
+  - 耗材
+  summary_keywords: []
+  enabled: true
+- category: 管理_员工福利
+  contra_keywords:
+  - 福利费
+  - 聚餐
+  - 福利
+  - 点心
+  - 团建
+  - 下午茶
+  summary_keywords: []
+  enabled: true
+- category: 管理_租金物业
+  contra_keywords:
+  - 房租
+  - 水电费
+  - 租金
+  - 物业管理
+  summary_keywords: []
+  enabled: true
+- category: 研发_人工成本
+  contra_keywords:
+  - 发放工资
+  - 职工工资
+  - 工资
+  - 薪资
+  - 奖金
+  summary_keywords: []
+  enabled: true
+- category: 管理_社保公积金
+  contra_keywords:
+  - 缴公积金
+  - 缴社保
+  - 社保
+  - 公积金
+  summary_keywords: []
+  enabled: true
+- category: 税金_个税
+  contra_keywords:
+  - 个人所得税
+  - 个税
+  summary_keywords: []
+  enabled: true
+- category: 税金_所得税
+  contra_keywords:
+  - 企业所得税
+  - 所得税
+  summary_keywords: []
+  enabled: true
+- category: 税金_印花税
+  contra_keywords:
+  - 印花税
+  summary_keywords: []
+  enabled: true
+- category: 税金_增值税
+  contra_keywords:
+  - 增值税
+  - 进项税
+  - 销项税
+  summary_keywords: []
+  enabled: true
+- category: 销售_交通费
+  contra_keywords:
+  - 车旅费
+  - 差旅费
+  - 交通费
+  - 报销款
+  summary_keywords: []
+  enabled: true
+- category: 销售_招待费
+  contra_keywords:
+  - 招待费
+  - 餐费
+  - 客户招待
+  summary_keywords: []
+  enabled: true
+- category: 管理_其他
+  contra_keywords:
+  - 报销
+  summary_keywords: []
+  enabled: true
+contra_filter:
+  include_keywords: []
+  exclude_keywords:
+  - 报销
+  - 招待费
+  - 福利费
+  - 聚餐
+  - 通讯费
+  - 话费
+  - 工资
+  - 奖金
+  - 社保
+column_mapping:
+  产品收入: 15
+  服务收入: 16
+  其他收入: 17
+  商品采购: 22
+  运费: 23
+  服务费: 24
+  返点佣金: 25
+  研发_人工成本: 26
+  研发_材料设备: 27
+  研发_服务费: 28
+  研发_委外: 29
+  销售_交通费: 30
+  销售_住宿费: 31
+  销售_车辆费: 32
+  销售_市内交通: 33
+  销售_招待费: 34
+  销售_服务费: 35
+  销售_经销返点: 36
+  销售_其他: 37
+  管理_办公费: 38
+  管理_租金物业: 39
+  管理_市内交通: 40
+  管理_招待费: 41
+  管理_差旅费: 42
+  管理_人员薪资: 43
+  管理_社保公积金: 44
+  管理_员工福利: 45
+  管理_其他: 46
+  财务_手续费: 47
+  财务_结息: 48
+  财务_贷款利息: 49
+  税金_增值税: 50
+  税金_所得税: 51
+  税金_印花税: 52
+  税金_个税: 53
+  固资_办公设备: 54
+  固资_办公家具: 55
+  营业外支出: 56
+  罚款: 57
+  违约金: 58
+data:
+  skip_vouchers:
+  - 期初余额
+  - 本期合计
+  - 本年累计
+  - ''
+  columns:
+    date: 日期
+    voucher: 凭证字号
+    description: 摘要
+    contra: 对方科目
+    debit: 借方
+    credit: 贷方
+    direction: 方向
+    balance: 余额
+  header_rows: 4
+  data_start_row: 5
+  decimal_places: 2
+  validation_threshold: 0.01
