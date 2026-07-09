@@ -6,6 +6,7 @@ import logging
 import traceback
 from pathlib import Path
 from datetime import datetime
+import re
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -32,6 +33,10 @@ logging.basicConfig(
 logger = logging.getLogger('CashFlowGenerator')
 
 
+# ===== 硬编码白名单前缀 =====
+ALLOW_PREFIXES = ["1122", "1123", "2202", "2203"]
+
+
 class ConfigManager:
     """配置管理器 - 只负责读写 config.yaml"""
     
@@ -41,7 +46,6 @@ class ConfigManager:
         self._load_config()
     
     def _load_config(self):
-        """从文件加载配置"""
         if self.config_path.exists():
             try:
                 with open(self.config_path, 'r', encoding='utf-8') as f:
@@ -52,8 +56,8 @@ class ConfigManager:
         return self.config
     
     def save_config(self, config):
-        """保存配置到文件"""
         try:
+            config['allow_prefixes'] = ALLOW_PREFIXES
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(config, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
             self.config = config
@@ -64,20 +68,17 @@ class ConfigManager:
 
 
 class WorkerThread(QThread):
-    """后台工作线程 - 纯串行版"""
+    """后台工作线程 - 支持单文件生成和汇总模式"""
     progress_updated = pyqtSignal(int, str)
     log_updated = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
+    file_progress = pyqtSignal(int, int, str)
     
-    def __init__(self, detail_path, bank_name, period_display, quarter, 
-                 sheet_name, cashflow_file):
+    def __init__(self, detail_paths, cashflow_file, mode="single"):
         super().__init__()
-        self.detail_path = detail_path
-        self.bank_name = bank_name
-        self.period_display = period_display
-        self.quarter = quarter
-        self.sheet_name = sheet_name
+        self.detail_paths = detail_paths
         self.cashflow_file = cashflow_file
+        self.mode = mode
         self._is_running = True
         self._start_time = None
     
@@ -87,87 +88,20 @@ class WorkerThread(QThread):
     def run(self):
         import time
         self._start_time = time.time()
-    
+        
         try:
             from main import CashFlowReportGenerator
-        
+            
             self.progress_updated.emit(5, "初始化...")
             self.log_updated.emit('▶ 开始运行')
-        
-            config_obj = Config.get_instance(Environment.DEVELOPMENT)
-            config_obj.reload_classification()
-        
-            if self.cashflow_file:
-                config_obj.file.output_dir = str(self.cashflow_file.parent)
-                self.log_updated.emit(f'📂 输出目录: {self.cashflow_file.parent}')
-        
-            # ===== 打印当前生效的规则 =====
-            classification = config_obj.data.classification
-            expense_rules = classification.expense_rules
-            exclude_keywords = classification.exclude_keywords
             
-            self.log_updated.emit(f'📋 当前生效的支出规则: {len(expense_rules)} 条')
-            for rule in expense_rules:
-                keywords = []
-                for cr in rule.contra_rules:
-                    keywords.extend(cr.keywords)
-                if keywords:
-                    self.log_updated.emit(f'  - {rule.category}: {keywords}')
-            
-            self.log_updated.emit(f'🚫 当前生效的排除关键词: {len(exclude_keywords)} 条')
-            for kw in exclude_keywords:
-                self.log_updated.emit(f'  - {kw}')
-        
-            self.progress_updated.emit(10, "加载数据...")
-            self.log_updated.emit(f'📊 加载明细账...')
-        
-            generator = CashFlowReportGenerator(Environment.DEVELOPMENT)
-            generator.bank_name = self.bank_name
-            generator.period_value = self.period_display
-            generator.sheet_name = self.sheet_name
-            generator.output_filename = self.cashflow_file.name
-        
-            generator.set_output_path(self.cashflow_file)
-        
-            self.log_updated.emit('📂 开始加载交易数据...')
-            transactions = generator.load_transactions(self.detail_path)
-            self.log_updated.emit(f'📊 加载完成，共 {len(transactions)} 笔')
-        
-            if not self._is_running:
-                self.finished.emit(False, "已停止")
-                return
-        
-            self.progress_updated.emit(40, f"加载完成 ({len(transactions)}笔)")
-            self.log_updated.emit(f'✅ 加载 {len(transactions)} 笔交易')
-        
-            if len(transactions) == 0:
-                self.finished.emit(False, "没有找到交易数据")
-                return
-        
-            self.progress_updated.emit(50, "分类聚合中...")
-            self.log_updated.emit('📝 串行分类处理...')
-        
-            generator.transactions = transactions
-        
-            self.log_updated.emit('🔄 开始执行 run_full_flow...')
-            success = generator.run_full_flow(self.detail_path, self.quarter)
-            self.log_updated.emit(f'🔄 run_full_flow 返回: {success}')
-        
-            if not self._is_running:
-                self.finished.emit(False, "已停止")
-                return
-        
-            if not success:
-                self.finished.emit(False, "生成失败")
-                return
-        
-            elapsed = time.time() - self._start_time
-            self.progress_updated.emit(100, "完成!")
-            self.log_updated.emit(f'✅ 报表已生成: {generator.output_path}')
-            self.log_updated.emit(f'⏱️ 总耗时: {elapsed:.1f} 秒')
-        
-            self.finished.emit(True, str(generator.output_path))
-        
+            if self.mode == "summary":
+                self.log_updated.emit(f'📊 汇总模式: 共 {len(self.detail_paths)} 个文件')
+                self._run_summary()
+            else:
+                self.log_updated.emit(f'📁 单文件生成模式: 共 {len(self.detail_paths)} 个文件')
+                self._run_single()
+                
         except Exception as e:
             import traceback
             error_msg = str(e)
@@ -176,12 +110,174 @@ class WorkerThread(QThread):
             self.log_updated.emit(f'📋 详细错误:\n{error_detail}')
             logger.error(f"生成失败: {error_msg}\n{error_detail}")
             self.finished.emit(False, error_msg)
+    
+    def _run_single(self):
+        """单文件生成模式 - 每个文件生成一个Sheet"""
+        import time
+        
+        from main import CashFlowReportGenerator
+        
+        config_obj = Config.get_instance(Environment.DEVELOPMENT)
+        config_obj.reload_classification()
+        
+        classification = config_obj.data.classification
+        expense_rules = classification.expense_rules
+        income_rules = classification.income_rules
+        allow_prefixes = getattr(classification, 'allow_prefixes', ALLOW_PREFIXES)
+        
+        self.log_updated.emit(f'📋 当前加载的收入规则: {len(income_rules)} 条')
+        for rule in income_rules:
+            keywords = []
+            for cr in rule.contra_rules:
+                keywords.extend(cr.keywords)
+            if keywords:
+                self.log_updated.emit(f'  - {rule.category}: {keywords}')
+        
+        self.log_updated.emit(f'📋 当前加载的支出规则: {len(expense_rules)} 条')
+        for rule in expense_rules:
+            keywords = []
+            for cr in rule.contra_rules:
+                keywords.extend(cr.keywords)
+            if keywords:
+                self.log_updated.emit(f'  - {rule.category}: {keywords}')
+        
+        self.log_updated.emit(f'✅ 白名单前缀（硬编码）: {allow_prefixes}')
+        
+        if self.cashflow_file:
+            config_obj.file.output_dir = str(self.cashflow_file.parent)
+        
+        total_files = len(self.detail_paths)
+        success_count = 0
+        failed_files = []
+        
+        for idx, detail_path in enumerate(self.detail_paths, 1):
+            if not self._is_running:
+                self.finished.emit(False, "已停止")
+                return
+            
+            detail_name = detail_path.stem
+            self.file_progress.emit(idx, total_files, detail_name)
+            self.log_updated.emit('')
+            self.log_updated.emit('=' * 50)
+            self.log_updated.emit(f'📄 处理 [{idx}/{total_files}]: {detail_path.name}')
+            self.log_updated.emit('=' * 50)
+            
+            progress_base = 5 + int((idx - 1) / total_files * 85)
+            self.progress_updated.emit(progress_base, f"处理中: {detail_name}")
+            
+            try:
+                generator = CashFlowReportGenerator(Environment.DEVELOPMENT)
+                
+                generator.bank_name = detail_name
+                generator.period_value = detail_name
+                generator.sheet_name = detail_name
+                generator.output_filename = f"{detail_name}.xlsx"
+                
+                generator.set_output_path(self.cashflow_file)
+                
+                self.log_updated.emit(f'📄 Sheet名称: {detail_name}')
+                
+                transactions = generator.load_transactions(detail_path)
+                self.log_updated.emit(f'📊 加载 {len(transactions)} 笔交易')
+                
+                if not self._is_running:
+                    self.finished.emit(False, "已停止")
+                    return
+                
+                if len(transactions) == 0:
+                    self.log_updated.emit(f'⚠️ 跳过: 没有找到交易数据')
+                    failed_files.append((detail_path.name, "没有找到交易数据"))
+                    continue
+                
+                generator.transactions = transactions
+                
+                quarter = self._extract_quarter(detail_name)
+                self.log_updated.emit(f'📅 识别季度: {quarter}')
+                
+                success = generator.run_full_flow(detail_path, quarter)
+                
+                if success:
+                    success_count += 1
+                    self.log_updated.emit(f'✅ {detail_name} 处理完成')
+                else:
+                    self.log_updated.emit(f'❌ {detail_name} 处理失败')
+                    failed_files.append((detail_path.name, "生成失败"))
+                
+            except Exception as e:
+                self.log_updated.emit(f'❌ 处理失败: {str(e)}')
+                failed_files.append((detail_path.name, str(e)))
+        
+        elapsed = time.time() - self._start_time
+        self.progress_updated.emit(100, "完成!")
+        
+        self.log_updated.emit('')
+        self.log_updated.emit('=' * 50)
+        self.log_updated.emit('📊 批量处理完成')
+        self.log_updated.emit(f'  成功: {success_count}/{total_files}')
+        if failed_files:
+            self.log_updated.emit(f'  失败: {len(failed_files)} 个')
+            for name, err in failed_files:
+                self.log_updated.emit(f'    - {name}: {err}')
+        self.log_updated.emit(f'⏱️ 总耗时: {elapsed:.1f} 秒')
+        self.log_updated.emit('=' * 50)
+        
+        self.finished.emit(True, f"成功 {success_count}/{total_files} 个文件")
+    
+    def _run_summary(self):
+        """汇总模式 - 所有文件汇总到汇总表"""
+        import time
+        
+        from main import CashFlowReportGenerator
+        
+        config_obj = Config.get_instance(Environment.DEVELOPMENT)
+        config_obj.reload_classification()
+        
+        generator = CashFlowReportGenerator(Environment.DEVELOPMENT)
+        generator.set_output_path(self.cashflow_file)
+        
+        self.log_updated.emit(f'📄 输出文件: {self.cashflow_file}')
+        self.log_updated.emit(f'📁 共 {len(self.detail_paths)} 个明细账文件')
+        
+        for idx, path in enumerate(self.detail_paths, 1):
+            self.log_updated.emit(f'  [{idx}] {path.name}')
+        
+        self.progress_updated.emit(30, "执行汇总...")
+        
+        success = generator.run_summary(self.detail_paths, self.cashflow_file)
+        
+        if success:
+            elapsed = time.time() - self._start_time
+            self.progress_updated.emit(100, "完成!")
+            self.log_updated.emit(f'✅ 汇总完成: {self.cashflow_file}')
+            self.log_updated.emit(f'⏱️ 总耗时: {elapsed:.1f} 秒')
+            self.finished.emit(True, str(self.cashflow_file))
+        else:
+            self.finished.emit(False, "汇总失败")
+    
+    def _extract_quarter(self, filename: str) -> str:
+        """从文件名提取季度"""
+        month_match = re.search(r'(\d+)月', filename)
+        if month_match:
+            month = int(month_match.group(1))
+            if month <= 3:
+                return 'Q1'
+            elif month <= 6:
+                return 'Q2'
+            elif month <= 9:
+                return 'Q3'
+            else:
+                return 'Q4'
+        
+        quarter_match = re.search(r'(Q[1-4])', filename, re.IGNORECASE)
+        if quarter_match:
+            return quarter_match.group(1).upper()
+        
+        return 'Q2'
 
 
 class MainWindow(QMainWindow):
     """主窗口 - 简洁版"""
     
-    # 统一按钮尺寸
     BTN_WIDTH = 100
     BTN_HEIGHT = 32
     BTN_RADIUS = 6
@@ -192,22 +288,54 @@ class MainWindow(QMainWindow):
         
         self.settings = QSettings('Weiyu', 'CashFlowGenerator')
         
-        # 使用 Config 单例
         self.config_obj = Config.get_instance(Environment.DEVELOPMENT)
         self.config_obj.reload_classification()
+        self.config_obj.data.classification.allow_prefixes = ALLOW_PREFIXES
         
-        # ConfigManager 负责读写 yaml 文件
         self.config_manager = ConfigManager()
         
-        self.worker_thread = None
+        # 两个Tab的独立Worker
+        self.single_worker = None
+        self.summary_worker = None
+        
         self.recent_files = self.settings.value('recent_files', []) or []
+        
+        # 两个Tab独立文件列表
+        self.single_files = []
+        self.summary_files = []
         
         self.ui_config = self.config_obj.ui
         
+        # 先初始化控件
+        self._init_controls()
+        # 再初始化UI
         self.init_ui()
         self.load_config()
         self.restore_window()
         self.update_recent_menu()
+    
+    def _init_controls(self):
+        """初始化所有控件"""
+        # 单文件生成Tab控件
+        self.single_detail_path = QLineEdit()
+        self.single_cashflow_path = QLineEdit()
+        self.single_file_list = QListWidget()
+        self.single_file_count_label = QLabel('共 0 个文件')
+        
+        # 汇总模式Tab控件
+        self.summary_detail_path = QLineEdit()
+        self.summary_cashflow_path = QLineEdit()
+        self.summary_file_list = QListWidget()
+        self.summary_file_count_label = QLabel('共 0 个文件')
+        
+        # 公共控件
+        self.expense_rules = QTextEdit()
+        self.log_text = QTextEdit()
+        self.progress_bar = QProgressBar()
+        self.progress_label = QLabel('就绪')
+        self.run_btn = None
+        self.stop_btn = None
+        self.tabs = QTabWidget()
     
     # ==================== 窗口管理 ====================
     def restore_window(self):
@@ -220,9 +348,12 @@ class MainWindow(QMainWindow):
     
     def closeEvent(self, event):
         self.save_window()
-        if self.worker_thread and self.worker_thread.isRunning():
-            self.worker_thread.stop()
-            self.worker_thread.wait()
+        if self.single_worker and self.single_worker.isRunning():
+            self.single_worker.stop()
+            self.single_worker.wait()
+        if self.summary_worker and self.summary_worker.isRunning():
+            self.summary_worker.stop()
+            self.summary_worker.wait()
         super().closeEvent(event)
     
     # ==================== 菜单栏 ====================
@@ -230,31 +361,24 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         
         file_menu = menubar.addMenu('文件(&F)')
-        
         self.recent_menu = QMenu('最近文件(&R)', self)
         file_menu.addMenu(self.recent_menu)
-        
         file_menu.addSeparator()
-        
         save_action = QAction('保存配置(&S)', self)
         save_action.setShortcut('Ctrl+S')
         save_action.triggered.connect(self.save_config)
         file_menu.addAction(save_action)
-        
         file_menu.addSeparator()
-        
         exit_action = QAction('退出(&X)', self)
         exit_action.setShortcut('Ctrl+Q')
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
         tools_menu = menubar.addMenu('工具(&T)')
-        
         preview_action = QAction('数据预览(&P)', self)
         preview_action.setShortcut('Ctrl+P')
         preview_action.triggered.connect(self.preview_data)
         tools_menu.addAction(preview_action)
-        
         validate_action = QAction('验证规则(&V)', self)
         validate_action.triggered.connect(self.validate_rules)
         tools_menu.addAction(validate_action)
@@ -285,8 +409,13 @@ class MainWindow(QMainWindow):
     
     def open_recent(self, path):
         if Path(path).exists():
-            self.detail_path.setText(path)
-            self.detail_path.setStyleSheet('background: white; color: #1e293b;')
+            current_tab = self.tabs.currentIndex()
+            if current_tab == 0:
+                self.single_files = [Path(path)]
+                self.update_file_list(self.single_file_list, self.single_files, self.single_file_count_label)
+            else:
+                self.summary_files = [Path(path)]
+                self.update_file_list(self.summary_file_list, self.summary_files, self.summary_file_count_label)
             self.append_log(f'📁 打开: {Path(path).name}')
             self.auto_save()
         else:
@@ -298,35 +427,43 @@ class MainWindow(QMainWindow):
         self.settings.setValue('recent_files', self.recent_files)
         self.update_recent_menu()
     
-    def add_recent(self, path):
-        if path in self.recent_files:
-            self.recent_files.remove(path)
-        self.recent_files.insert(0, path)
+    def add_recent(self, paths):
+        for path in paths:
+            if path in self.recent_files:
+                self.recent_files.remove(path)
+            self.recent_files.insert(0, path)
         self.recent_files = self.recent_files[:10]
         self.settings.setValue('recent_files', self.recent_files)
         self.update_recent_menu()
     
     def validate_rules(self):
-        """验证规则格式是否正确（用户主动点击验证按钮）"""
         is_valid, errors = self._check_rules()
-    
         if is_valid:
             QMessageBox.information(self, '验证通过', '✅ 规则格式正确')
             return True
         else:
-            # 构建错误信息，包含行号和原始内容
             error_msg = "支出规则存在以下语法错误：\n\n"
             for err in errors:
                 error_msg += f"  • {err}\n"
             error_msg += "\n💡 请根据提示修正后重新验证"
-        
             QMessageBox.warning(self, '规则错误', error_msg)
-            return False 
+            return False
     
     def preview_data(self):
-        path = self.detail_path.text().strip()
-        if not path or not Path(path).exists():
+        """预览当前Tab选中的第一个文件"""
+        current_tab = self.tabs.currentIndex()
+        if current_tab == 0:
+            files = self.single_files
+        else:
+            files = self.summary_files
+        
+        if not files:
             QMessageBox.warning(self, '提示', '请先选择明细账文件')
+            return
+        
+        path = str(files[0])
+        if not Path(path).exists():
+            QMessageBox.warning(self, '提示', '文件不存在')
             return
         
         try:
@@ -339,12 +476,12 @@ class MainWindow(QMainWindow):
                 return
             
             dialog = QDialog(self)
-            dialog.setWindowTitle(f'数据预览 ({len(transactions)}笔)')
+            dialog.setWindowTitle(f'数据预览 ({Path(path).name}) - {len(transactions)}笔')
             dialog.resize(850, 500)
             
             layout = QVBoxLayout(dialog)
             
-            info = QLabel(f'总计 {len(transactions)} 笔 | 收入 {len([t for t in transactions if t.is_income])} 笔 | 支出 {len([t for t in transactions if not t.is_income])} 笔')
+            info = QLabel(f'文件: {Path(path).name} | 总计 {len(transactions)} 笔 | 收入 {len([t for t in transactions if t.is_income])} 笔 | 支出 {len([t for t in transactions if not t.is_income])} 笔')
             layout.addWidget(info)
             
             table = QTableWidget()
@@ -377,13 +514,30 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, '错误', f'预览失败: {e}')
     
     def _log_rules(self):
-        """在日志中展示当前规则（程序内部格式）"""
         classification = self.config_obj.data.classification
         expense_rules = classification.expense_rules
-        exclude_keywords = classification.exclude_keywords
-    
+
         self.append_log('')
         self.append_log('=' * 60)
+    
+        # ===== 收入规则 - 固定显示"其他收入" =====
+        self.append_log('📋 当前收入规则（固定）:')
+        self.append_log('  其他收入: 所有收入统一归入此分类')
+    
+        self.append_log('')
+        self.append_log('📋 当前加载的支出规则:')
+        if expense_rules:
+            for rule in expense_rules:
+                keywords = []
+                for cr in rule.contra_rules:
+                    keywords.extend(cr.keywords)
+                keywords.extend(rule.summary_keywords)
+                if keywords:
+                    self.append_log(f'  {rule.category}: {keywords}')
+        else:
+            self.append_log('  (无支出规则)') 
+        
+        self.append_log('')
         self.append_log('📋 当前加载的支出规则:')
         if expense_rules:
             for rule in expense_rules:
@@ -395,34 +549,34 @@ class MainWindow(QMainWindow):
                     self.append_log(f'  {rule.category}: {keywords}')
         else:
             self.append_log('  (无支出规则)')
-    
+
         self.append_log('')
-        self.append_log('🚫 当前加载的排除关键词:')
-        if exclude_keywords:
-            self.append_log(f'  {exclude_keywords}')
-        else:
-            self.append_log('  (无排除关键词)')
+        self.append_log('✅ 白名单前缀（硬编码）:')
+        self.append_log(f'  {ALLOW_PREFIXES}')
+        self.append_log('💡 只有对方科目以这些前缀开头的交易才会填充客户/供应商列')
         self.append_log('=' * 60)
         self.append_log('')
+    
     def save_config(self):
         try:
             config = self.build_config()
+            config['allow_prefixes'] = ALLOW_PREFIXES
             self.config_manager.save_config(config)
             self.config_obj.reload_classification()
-        
-            # ===== 在日志中展示保存的规则 =====
+            self.config_obj.data.classification.allow_prefixes = ALLOW_PREFIXES
             self._log_rules()
-        
             self.append_log('💾 配置已保存并重新加载')
             QMessageBox.information(self, '完成', '配置已保存并生效')
         except Exception as e:
-            QMessageBox.critical(self, '错误', f'保存失败: {e}') 
+            QMessageBox.critical(self, '错误', f'保存失败: {e}')
     
     def show_about(self):
         QMessageBox.about(self, '关于', 
             '📊 现金流量报表生成器\n\n'
             '版本 1.0\n\n'
-            '根据明细账自动生成现金流量报表\n\n'
+            '支持两种模式:\n'
+            '  📄 单文件生成 - 每个文件生成独立Sheet\n'
+            '  📊 汇总模式 - 所有文件汇总到汇总表\n\n'
             '快捷键:\n'
             '  Ctrl+P  数据预览\n'
             '  Ctrl+R  运行\n'
@@ -454,13 +608,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         
         # Tab
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        
-        self.tabs.addTab(self.create_basic_tab(), '📋 基本设置')
+        self.tabs.addTab(self.create_single_tab(), '📄 单文件生成')
+        self.tabs.addTab(self.create_summary_tab(), '📊 汇总模式')
         self.tabs.addTab(self.create_rules_tab(), '📌 支出规则')
-        self.tabs.addTab(self.create_exclude_tab(), '🚫 不填充规则')
+        self.tabs.addTab(self.create_whitelist_tab(), '✅ 白名单')
         self.tabs.addTab(self.create_log_tab(), '📝 日志')
+        layout.addWidget(self.tabs)
         
         # ===== 底部区域 =====
         bottom_widget = QWidget()
@@ -475,7 +628,6 @@ class MainWindow(QMainWindow):
         bottom_layout.setContentsMargins(16, 8, 16, 8)
         bottom_layout.setSpacing(16)
         
-        self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat('%p%')
@@ -498,7 +650,6 @@ class MainWindow(QMainWindow):
         """)
         bottom_layout.addWidget(self.progress_bar, 1)
         
-        self.progress_label = QLabel('就绪')
         self.progress_label.setFixedWidth(80)
         self.progress_label.setAlignment(Qt.AlignCenter)
         self.progress_label.setStyleSheet("""
@@ -561,11 +712,11 @@ class MainWindow(QMainWindow):
             }
             QTabBar::tab {
                 background: #f1f5f9;
-                padding: 10px 30px;
+                padding: 10px 24px;
                 margin-right: 2px;
                 border-top-left-radius: 10px;
                 border-top-right-radius: 10px;
-                font-size: 15px;
+                font-size: 14px;
                 color: #64748b;
             }
             QTabBar::tab:selected {
@@ -689,94 +840,171 @@ class MainWindow(QMainWindow):
                 background: #4f46e5;
                 color: white;
             }
+            
+            QListWidget {
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 13px;
+                background: #f8fafc;
+            }
+            QListWidget::item {
+                padding: 4px 8px;
+            }
         """
     
-    # ==================== Tab 创建 ====================
-    def create_basic_tab(self):
+    def _create_file_selector(self, line_edit, placeholder_text):
+        """创建文件选择器组件"""
+        container = QHBoxLayout()
+        container.setSpacing(10)
+        
+        line_edit.setObjectName('placeholder')
+        line_edit.setPlaceholderText(placeholder_text)
+        line_edit.setReadOnly(True)
+        line_edit.setFixedHeight(self.BTN_HEIGHT)
+        line_edit.setStyleSheet(f"""
+            QLineEdit {{
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 2px 14px;
+                font-size: 14px;
+                background: #f8fafc;
+                color: #94a3b8;
+                height: {self.BTN_HEIGHT}px;
+            }}
+            QLineEdit:focus {{ border-color: #4f46e5; }}
+        """)
+        container.addWidget(line_edit, 1)
+        
+        btn = self._create_tool_button('📂 选择')
+        container.addWidget(btn, 0, Qt.AlignVCenter)
+        
+        return container, btn
+    
+    def _create_tool_button(self, text):
+        btn = QPushButton(text)
+        btn.setObjectName('toolBtn')
+        btn.setFixedSize(self.BTN_WIDTH, self.BTN_HEIGHT)
+        btn.setStyleSheet(f"""
+            QPushButton#toolBtn {{
+                background: #f1f5f9;
+                color: #1e293b;
+                border: 2px solid #e2e8f0;
+                border-radius: {self.BTN_RADIUS}px;
+                font-size: {self.BTN_FONT_SIZE}px;
+                font-weight: 500;
+                padding: 3px 8px;
+                margin-top: 8px;
+            }}
+            QPushButton#toolBtn:hover {{ background: #e5e7eb; }}
+        """)
+        return btn
+    
+    def select_files(self, file_list, line_edit, list_widget, count_label):
+        """选择多个文件"""
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, 
+            '选择明细账文件（按住Ctrl多选）', 
+            '',
+            'Excel文件 (*.xlsx *.xls)'
+        )
+        if paths:
+            paths = sorted(paths)
+            existing_paths = {str(p) for p in file_list}
+            for path in paths:
+                if path not in existing_paths:
+                    file_list.append(Path(path))
+                    existing_paths.add(path)
+            
+            self.update_file_list(list_widget, file_list, count_label)
+            self.add_recent(paths)
+            self.append_log(f'📁 添加了 {len(paths)} 个明细账文件')
+            self.auto_save()
+    
+    def update_file_list(self, list_widget, file_list, count_label):
+        """更新文件列表显示"""
+        list_widget.clear()
+        for path in file_list:
+            list_widget.addItem(path.name)
+        
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            if item:
+                item.setToolTip(str(file_list[i]))
+        
+        if file_list:
+            count_label.setText(f'共 {len(file_list)} 个文件')
+        else:
+            count_label.setText('共 0 个文件')
+    
+    def clear_file_list(self, file_list, list_widget, count_label, log_msg):
+        """清空文件列表"""
+        file_list.clear()
+        self.update_file_list(list_widget, file_list, count_label)
+        self.append_log(log_msg)
+    
+    def select_cashflow_target(self, line_edit):
+        """选择输出位置"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle('选择输出位置')
+        msg.setText('请选择操作模式：')
+        dir_btn = msg.addButton('📂 选择输出目录', QMessageBox.ActionRole)
+        file_btn = msg.addButton('📄 选择已有文件', QMessageBox.ActionRole)
+        cancel_btn = msg.addButton('取消', QMessageBox.RejectRole)
+        msg.exec_()
+        
+        clicked = msg.clickedButton()
+        
+        if clicked == cancel_btn:
+            return
+        
+        elif clicked == dir_btn:
+            current = line_edit.text().strip()
+            if current and Path(current).suffix in ['.xlsx', '.xls']:
+                current = str(Path(current).parent)
+            elif not current:
+                current = str(Path.home() / 'Desktop')
+            
+            path = QFileDialog.getExistingDirectory(
+                self, 
+                '选择输出目录', 
+                current
+            )
+            if path:
+                line_edit.setText(path)
+                line_edit.setStyleSheet('background: white; color: #1e293b;')
+                self.append_log(f'📂 输出目录: {path}')
+                self.auto_save()
+        
+        elif clicked == file_btn:
+            current = line_edit.text().strip()
+            current_dir = ''
+            if current:
+                p = Path(current)
+                if p.suffix in ['.xlsx', '.xls']:
+                    current_dir = str(p.parent)
+                elif p.is_dir():
+                    current_dir = str(p)
+            
+            path, _ = QFileDialog.getOpenFileName(
+                self, 
+                '选择已有文件', 
+                current_dir,
+                'Excel文件 (*.xlsx *.xls)'
+            )
+            if path:
+                line_edit.setText(path)
+                line_edit.setStyleSheet('background: white; color: #1e293b;')
+                self.append_log(f'📄 选择文件: {Path(path).name}')
+                self.auto_save()
+    
+    # ==================== 单文件生成Tab ====================
+    def create_single_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(16)
         layout.setContentsMargins(40, 22, 40, 22)
         
-        # 报表设置
-        g1 = QGroupBox('报表设置')
-        g1.setStyleSheet("""
-            QGroupBox {
-                border: 1px solid #e2e8f0;
-                border-radius: 10px;
-                margin-top: 12px;
-                padding-top: 16px;
-                background: white;
-            }
-            QGroupBox::title {
-                left: 16px;
-                padding: 0 12px;
-                color: #0f172a;
-                font-size: 15px;
-                font-weight: 600;
-            }
-        """)
-        
-        grid = QGridLayout()
-        grid.setVerticalSpacing(16)
-        grid.setHorizontalSpacing(24)
-        grid.setContentsMargins(28, 20, 28, 18)
-        
-        period_label = QLabel('期间：')
-        period_label.setStyleSheet('font-weight: 500; color: #1e293b;')
-        grid.addWidget(period_label, 0, 0, alignment=Qt.AlignRight | Qt.AlignVCenter)
-        
-        self.period_input = QLineEdit()
-        self.period_input.setPlaceholderText('例如: Q1, Q2, 1月, 2月')
-        self.period_input.setMinimumHeight(32)
-        self.period_input.setFixedWidth(150)
-        self.period_input.setStyleSheet("""
-            QLineEdit {
-                border: 2px solid #e2e8f0;
-                border-radius: 8px;
-                padding: 6px 14px;
-                font-size: 14px;
-                background: white;
-                min-height: 30px;
-                color: #1e293b;
-            }
-            QLineEdit:focus { border-color: #4f46e5; }
-            QLineEdit:hover { border-color: #94a3b8; }
-        """)
-        grid.addWidget(self.period_input, 0, 1, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-        
-        bank_label = QLabel('银行名称：')
-        bank_label.setStyleSheet('font-weight: 500; color: #1e293b;')
-        grid.addWidget(bank_label, 0, 2, alignment=Qt.AlignRight | Qt.AlignVCenter)
-        
-        self.bank_name = QLineEdit()
-        self.bank_name.setPlaceholderText('例如: 建设银行')
-        self.bank_name.setMinimumHeight(32)
-        self.bank_name.setFixedWidth(180)
-        self.bank_name.setStyleSheet("""
-            QLineEdit {
-                border: 2px solid #e2e8f0;
-                border-radius: 8px;
-                padding: 6px 14px;
-                font-size: 14px;
-                background: white;
-                min-height: 30px;
-                color: #1e293b;
-            }
-            QLineEdit:focus { border-color: #4f46e5; }
-            QLineEdit:hover { border-color: #94a3b8; }
-        """)
-        grid.addWidget(self.bank_name, 0, 3, alignment=Qt.AlignLeft | Qt.AlignVCenter)
-        
-        grid.setColumnStretch(0, 0)
-        grid.setColumnStretch(1, 0)
-        grid.setColumnStretch(2, 0)
-        grid.setColumnStretch(3, 1)
-        
-        g1.setLayout(grid)
-        layout.addWidget(g1)
-        
-        # 文件路径
         g2 = QGroupBox('文件路径')
         g2.setStyleSheet("""
             QGroupBox {
@@ -801,44 +1029,25 @@ class MainWindow(QMainWindow):
         f2.setContentsMargins(28, 20, 28, 18)
         
         # 明细账
-        detail_container = QHBoxLayout()
-        detail_container.setSpacing(10)
-
-        self.detail_path = QLineEdit()
-        self.detail_path.setObjectName('placeholder')
-        self.detail_path.setPlaceholderText('点击右侧按钮选择明细账文件')
-        self.detail_path.setReadOnly(True)
-        self.detail_path.setFixedHeight(self.BTN_HEIGHT)
-        self.detail_path.setStyleSheet(f"""
-            QLineEdit {{
-                border: 1px solid #e2e8f0;
-                border-radius: 8px;
-                padding: 2px 14px;
-                font-size: 14px;
-                background: #f8fafc;
-                color: #94a3b8;
-                height: {self.BTN_HEIGHT}px;
-            }}
-            QLineEdit:focus {{ border-color: #4f46e5; }}
-        """)
-        detail_container.addWidget(self.detail_path, 1)
-
-        self.detail_btn = self._create_tool_button('📂 选择')
-        self.detail_btn.clicked.connect(self.select_detail_file)
-        detail_container.addWidget(self.detail_btn, 0, Qt.AlignVCenter)
-
+        detail_container, detail_btn = self._create_file_selector(
+            self.single_detail_path,
+            '点击右侧按钮选择明细账文件（支持Ctrl多选）'
+        )
+        detail_btn.clicked.connect(lambda: self.select_files(
+            self.single_files, self.single_detail_path, 
+            self.single_file_list, self.single_file_count_label
+        ))
         f2.addRow('明细账：', detail_container)
-
+        
         # 现金流表
         cashflow_container = QHBoxLayout()
         cashflow_container.setSpacing(10)
-
-        self.cashflow_path = QLineEdit()
-        self.cashflow_path.setObjectName('placeholder')
-        self.cashflow_path.setPlaceholderText('选择输出目录 或 已有现金流表文件')
-        self.cashflow_path.setReadOnly(True)
-        self.cashflow_path.setFixedHeight(self.BTN_HEIGHT)
-        self.cashflow_path.setStyleSheet(f"""
+        
+        self.single_cashflow_path.setObjectName('placeholder')
+        self.single_cashflow_path.setPlaceholderText('选择输出目录 或 已有现金流表文件')
+        self.single_cashflow_path.setReadOnly(True)
+        self.single_cashflow_path.setFixedHeight(self.BTN_HEIGHT)
+        self.single_cashflow_path.setStyleSheet(f"""
             QLineEdit {{
                 border: 1px solid #e2e8f0;
                 border-radius: 8px;
@@ -850,18 +1059,42 @@ class MainWindow(QMainWindow):
             }}
             QLineEdit:focus {{ border-color: #4f46e5; }}
         """)
-        cashflow_container.addWidget(self.cashflow_path, 1)
-
-        self.cashflow_btn = self._create_tool_button('📂 选择')
-        self.cashflow_btn.clicked.connect(self.select_cashflow_target)
-        cashflow_container.addWidget(self.cashflow_btn, 0, Qt.AlignVCenter)
-
+        cashflow_container.addWidget(self.single_cashflow_path, 1)
+        
+        cashflow_btn = self._create_tool_button('📂 选择')
+        cashflow_btn.clicked.connect(lambda: self.select_cashflow_target(self.single_cashflow_path))
+        cashflow_container.addWidget(cashflow_btn, 0, Qt.AlignVCenter)
+        
         f2.addRow('现金流表：', cashflow_container)
-       
-        # 模式提示
-        self.mode_hint = QLabel('💡 选择目录 → 自动创建 公司名_时间戳.xlsx  |  选择已有文件 → 添加Sheet')
-        self.mode_hint.setStyleSheet('color: #94a3b8; font-size: 13px; padding: 4px 0 0 0;')
-        f2.addRow('', self.mode_hint)
+        
+        mode_hint = QLabel('💡 每个明细账文件生成一个独立的Sheet')
+        mode_hint.setStyleSheet('color: #94a3b8; font-size: 13px; padding: 4px 0 0 0;')
+        f2.addRow('', mode_hint)
+        
+        # 文件列表
+        file_list_label = QLabel('📋 已选择的明细账文件：')
+        file_list_label.setStyleSheet('font-weight: 600; color: #0f172a; font-size: 14px; padding-top: 8px;')
+        f2.addRow('', file_list_label)
+        
+        self.single_file_list.setFixedHeight(80)
+        f2.addRow('', self.single_file_list)
+        
+        file_btn_layout = QHBoxLayout()
+        file_btn_layout.setSpacing(10)
+        
+        clear_btn = self._create_tool_button('🗑 清空列表')
+        clear_btn.clicked.connect(lambda: self.clear_file_list(
+            self.single_files, self.single_file_list, 
+            self.single_file_count_label, '🗑 已清空文件列表'
+        ))
+        file_btn_layout.addWidget(clear_btn)
+        
+        file_btn_layout.addStretch()
+        
+        self.single_file_count_label.setStyleSheet('color: #64748b; font-size: 13px;')
+        file_btn_layout.addWidget(self.single_file_count_label)
+        
+        f2.addRow('', file_btn_layout)
         
         g2.setLayout(f2)
         layout.addWidget(g2)
@@ -869,25 +1102,111 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return widget
     
-    def _create_tool_button(self, text):
-        btn = QPushButton(text)
-        btn.setObjectName('toolBtn')
-        btn.setFixedSize(self.BTN_WIDTH, self.BTN_HEIGHT)
-        btn.setStyleSheet(f"""
-            QPushButton#toolBtn {{
-                background: #f1f5f9;
-                color: #1e293b;
-                border: 2px solid #e2e8f0;
-                border-radius: {self.BTN_RADIUS}px;
-                font-size: {self.BTN_FONT_SIZE}px;
-                font-weight: 500;
-                padding: 3px 8px;
-                margin-top: 8px;
-            }}
-            QPushButton#toolBtn:hover {{ background: #e5e7eb; }}
+    # ==================== 汇总模式Tab ====================
+    def create_summary_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(16)
+        layout.setContentsMargins(40, 22, 40, 22)
+        
+        g2 = QGroupBox('文件路径')
+        g2.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 16px;
+                background: white;
+            }
+            QGroupBox::title {
+                left: 16px;
+                padding: 0 12px;
+                color: #0f172a;
+                font-size: 15px;
+                font-weight: 600;
+            }
         """)
-        return btn
+        
+        f2 = QFormLayout()
+        f2.setVerticalSpacing(16)
+        f2.setHorizontalSpacing(20)
+        f2.setContentsMargins(28, 20, 28, 18)
+        
+        # 明细账
+        detail_container, detail_btn = self._create_file_selector(
+            self.summary_detail_path,
+            '点击右侧按钮选择明细账文件（支持Ctrl多选）'
+        )
+        detail_btn.clicked.connect(lambda: self.select_files(
+            self.summary_files, self.summary_detail_path, 
+            self.summary_file_list, self.summary_file_count_label
+        ))
+        f2.addRow('明细账：', detail_container)
+        
+        # 汇总表
+        cashflow_container = QHBoxLayout()
+        cashflow_container.setSpacing(10)
+        
+        self.summary_cashflow_path.setObjectName('placeholder')
+        self.summary_cashflow_path.setPlaceholderText('选择输出目录 或 已有汇总表文件')
+        self.summary_cashflow_path.setReadOnly(True)
+        self.summary_cashflow_path.setFixedHeight(self.BTN_HEIGHT)
+        self.summary_cashflow_path.setStyleSheet(f"""
+            QLineEdit {{
+                border: 1px solid #e2e8f0;
+                border-radius: 8px;
+                padding: 2px 14px;
+                font-size: 14px;
+                background: #f8fafc;
+                color: #94a3b8;
+                height: {self.BTN_HEIGHT}px;
+            }}
+            QLineEdit:focus {{ border-color: #4f46e5; }}
+        """)
+        cashflow_container.addWidget(self.summary_cashflow_path, 1)
+        
+        cashflow_btn = self._create_tool_button('📂 选择')
+        cashflow_btn.clicked.connect(lambda: self.select_cashflow_target(self.summary_cashflow_path))
+        cashflow_container.addWidget(cashflow_btn, 0, Qt.AlignVCenter)
+        
+        f2.addRow('汇总表：', cashflow_container)
+        
+        mode_hint = QLabel('💡 所有明细账文件汇总到"汇总表"Sheet，每个银行每月一行')
+        mode_hint.setStyleSheet('color: #4f46e5; font-size: 13px; padding: 4px 0 0 0;')
+        f2.addRow('', mode_hint)
+        
+        # 文件列表
+        file_list_label = QLabel('📋 已选择的明细账文件：')
+        file_list_label.setStyleSheet('font-weight: 600; color: #0f172a; font-size: 14px; padding-top: 8px;')
+        f2.addRow('', file_list_label)
+        
+        self.summary_file_list.setFixedHeight(80)
+        f2.addRow('', self.summary_file_list)
+        
+        file_btn_layout = QHBoxLayout()
+        file_btn_layout.setSpacing(10)
+        
+        clear_btn = self._create_tool_button('🗑 清空列表')
+        clear_btn.clicked.connect(lambda: self.clear_file_list(
+            self.summary_files, self.summary_file_list, 
+            self.summary_file_count_label, '🗑 已清空汇总模式文件列表'
+        ))
+        file_btn_layout.addWidget(clear_btn)
+        
+        file_btn_layout.addStretch()
+        
+        self.summary_file_count_label.setStyleSheet('color: #64748b; font-size: 13px;')
+        file_btn_layout.addWidget(self.summary_file_count_label)
+        
+        f2.addRow('', file_btn_layout)
+        
+        g2.setLayout(f2)
+        layout.addWidget(g2)
+        
+        layout.addStretch()
+        return widget
     
+    # ==================== 支出规则Tab ====================
     def create_rules_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -908,49 +1227,103 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet('color: #94a3b8; font-size: 13px;')
         layout.addWidget(hint)
         
-        self.expense_rules = QTextEdit()
         self.expense_rules.setPlaceholderText(
             '示例:\n'
-            '商品采购:付供应商款,采购款,货款\n'
-            '运费:运费,快递,物流,顺丰\n'
-            '财务_手续费:银行手续费,手续费'
+            '主营业务支出_商品采购:付供应商款,采购款,货款\n'
+            '主营业务支出_运费:运费,快递,物流,顺丰\n'
+            '财务费用_手续费:银行手续费,手续费'
         )
         self.expense_rules.setMinimumHeight(360)
         layout.addWidget(self.expense_rules)
         
         return widget
     
-    def create_exclude_tab(self):
+    # ==================== 白名单Tab ====================
+    def create_whitelist_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(10)
         layout.setContentsMargins(40, 18, 40, 18)
         
-        hint = QLabel('每行一个关键词，匹配到的科目不填充客户/供应商列')
-        hint.setStyleSheet('color: #94a3b8; font-size: 13px;')
-        layout.addWidget(hint)
+        info_box = QGroupBox('📋 白名单规则（硬编码，不可编辑）')
+        info_box.setStyleSheet("""
+            QGroupBox {
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 16px;
+                background: #f8fafc;
+            }
+            QGroupBox::title {
+                left: 16px;
+                padding: 0 12px;
+                color: #0f172a;
+                font-size: 15px;
+                font-weight: 600;
+            }
+        """)
+        info_layout = QVBoxLayout(info_box)
+        info_layout.setContentsMargins(28, 20, 28, 18)
+        info_layout.setSpacing(12)
         
-        self.exclude_keywords = QTextEdit()
-        self.exclude_keywords.setPlaceholderText(
-            '应付职工薪酬\n应交税费\n管理费用\n销售费用\n财务费用\n研发费用\n固定资产\n银行存款'
+        desc = QLabel(
+            '只有对方科目以以下前缀开头的交易，才会填充到「客户/供应商」列：'
         )
-        self.exclude_keywords.setMinimumHeight(360)
-        layout.addWidget(self.exclude_keywords)
+        desc.setWordWrap(True)
+        desc.setStyleSheet('color: #1e293b; font-size: 14px;')
+        info_layout.addWidget(desc)
         
-        tip = QLabel('💡 应收/应付类科目会自动填充客户/供应商列')
-        tip.setStyleSheet('color: #94a3b8; font-size: 13px; padding: 4px 0;')
-        layout.addWidget(tip)
+        prefixes_widget = QWidget()
+        prefixes_layout = QHBoxLayout(prefixes_widget)
+        prefixes_layout.setSpacing(16)
+        prefixes_layout.setContentsMargins(0, 8, 0, 8)
         
+        prefix_info = [
+            ("1122", "应收账款"),
+            ("1123", "预付账款"),
+            ("2202", "应付账款"),
+            ("2203", "预收账款"),
+        ]
+        
+        for code, name in prefix_info:
+            label = QLabel(f'<b>{code}</b>  →  {name}')
+            label.setStyleSheet("""
+                QLabel {
+                    background: white;
+                    border: 2px solid #4f46e5;
+                    border-radius: 8px;
+                    padding: 10px 16px;
+                    font-size: 14px;
+                    color: #0f172a;
+                    min-width: 120px;
+                }
+            """)
+            label.setAlignment(Qt.AlignCenter)
+            prefixes_layout.addWidget(label)
+        
+        prefixes_layout.addStretch()
+        info_layout.addWidget(prefixes_widget)
+        
+        tip = QLabel(
+            '💡 示例：对方科目为 "112201_应收账款_某某公司"  →  会填充客户/供应商列\n'
+            '   对方科目为 "管理费用"  →  不会填充客户/供应商列'
+        )
+        tip.setWordWrap(True)
+        tip.setStyleSheet('color: #64748b; font-size: 13px; background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;')
+        info_layout.addWidget(tip)
+        
+        layout.addWidget(info_box)
         layout.addStretch()
+        
         return widget
     
+    # ==================== 日志Tab ====================
     def create_log_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setSpacing(10)
         layout.setContentsMargins(30, 16, 30, 16)
         
-        self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet("""
             QTextEdit {
@@ -975,131 +1348,40 @@ class MainWindow(QMainWindow):
         
         return widget
     
-    # ==================== 文件选择 ====================
-    def select_detail_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, '选择明细账文件', '', 'Excel文件 (*.xlsx *.xls)')
-        if path:
-            self.detail_path.setText(path)
-            self.detail_path.setStyleSheet('background: white; color: #1e293b;')
-            self.add_recent(path)
-            self.append_log(f'📁 明细账: {Path(path).name}')
-            self.auto_save()
-    
-    def select_cashflow_target(self):
-        msg = QMessageBox(self)
-        msg.setWindowTitle('选择现金流表')
-        msg.setText('请选择操作模式：')
-        dir_btn = msg.addButton('📂 选择输出目录', QMessageBox.ActionRole)
-        file_btn = msg.addButton('📄 选择已有文件', QMessageBox.ActionRole)
-        cancel_btn = msg.addButton('取消', QMessageBox.RejectRole)
-        msg.exec_()
-        
-        clicked = msg.clickedButton()
-        
-        if clicked == cancel_btn:
-            return
-        
-        elif clicked == dir_btn:
-            current = self.cashflow_path.text().strip()
-            if current and Path(current).suffix in ['.xlsx', '.xls']:
-                current = str(Path(current).parent)
-            elif not current:
-                current = str(Path.home() / 'Desktop')
-            
-            path = QFileDialog.getExistingDirectory(
-                self, 
-                '选择输出目录（将自动创建 公司名_时间戳.xlsx）', 
-                current
-            )
-            if path:
-                self.cashflow_path.setText(path)
-                self.cashflow_path.setStyleSheet('background: white; color: #1e293b;')
-                self.mode_hint.setText('💡 目录模式 → 将自动创建 公司名_时间戳.xlsx')
-                self.append_log(f'📂 输出目录: {path}')
-                self.auto_save()
-        
-        elif clicked == file_btn:
-            current = self.cashflow_path.text().strip()
-            current_dir = ''
-            if current:
-                p = Path(current)
-                if p.suffix in ['.xlsx', '.xls']:
-                    current_dir = str(p.parent)
-                elif p.is_dir():
-                    current_dir = str(p)
-            
-            path, _ = QFileDialog.getOpenFileName(
-                self, 
-                '选择已有现金流表文件', 
-                current_dir,
-                'Excel文件 (*.xlsx *.xls)'
-            )
-            if path:
-                self.cashflow_path.setText(path)
-                self.cashflow_path.setStyleSheet('background: white; color: #1e293b;')
-                self.mode_hint.setText('💡 文件模式 → 将在已有文件中添加新Sheet')
-                self.append_log(f'📄 现金流表: {Path(path).name}')
-                self.auto_save()
-    
-    # ==================== 期间辅助方法 ====================
-    def get_period_value(self):
-        return self.period_input.text().strip()
-    
-    def get_quarter_code(self):
-        text = self.period_input.text().strip()
-        if text.upper().startswith('Q'):
-            return text.upper()
-        if text.endswith('月'):
-            try:
-                month = int(text.replace('月', ''))
-                if month <= 3:
-                    return 'Q1'
-                elif month <= 6:
-                    return 'Q2'
-                elif month <= 9:
-                    return 'Q3'
-                else:
-                    return 'Q4'
-            except ValueError:
-                pass
-        return 'Q1'
-    
     # ==================== 配置 ====================
     def load_config(self):
-        """从 Config 单例加载配置到 GUI 控件"""
         classification = self.config_obj.data.classification
         yaml_config = self.config_manager.config
     
-        # 加载期间
-        saved_period = yaml_config.get('app', {}).get('period_value', '')
-        if saved_period:
-            self.period_input.setText(saved_period)
+        classification.allow_prefixes = ALLOW_PREFIXES
     
-        # 加载银行名称
-        banks = yaml_config.get('company', {}).get('banks', [])
-        if banks:
-            self.bank_name.setText(banks[0].get('name', ''))
-    
-        # 加载文件路径
         file_cfg = yaml_config.get('file', {})
+        
+        # 加载单文件生成模式
+        single_files = file_cfg.get('single_files', [])
+        if single_files:
+            self.single_files = [Path(p) for p in single_files if Path(p).exists()]
+            self.update_file_list(self.single_file_list, self.single_files, self.single_file_count_label)
+        
+        # 加载汇总模式
+        summary_files = file_cfg.get('summary_files', [])
+        if summary_files:
+            self.summary_files = [Path(p) for p in summary_files if Path(p).exists()]
+            self.update_file_list(self.summary_file_list, self.summary_files, self.summary_file_count_label)
+        
+        # 加载单文件生成现金流路径
+        single_cashflow = file_cfg.get('single_cashflow_file', '')
+        if single_cashflow:
+            self.single_cashflow_path.setText(single_cashflow)
+            self.single_cashflow_path.setStyleSheet('background: white; color: #1e293b;')
+        
+        # 加载汇总模式现金流路径
+        summary_cashflow = file_cfg.get('summary_cashflow_file', '')
+        if summary_cashflow:
+            self.summary_cashflow_path.setText(summary_cashflow)
+            self.summary_cashflow_path.setStyleSheet('background: white; color: #1e293b;')
     
-        detail = file_cfg.get('detail_path', '')
-        if detail:
-            self.detail_path.setText(detail)
-            self.detail_path.setStyleSheet('background: white; color: #1e293b;')
-        else:
-            self.detail_path.setStyleSheet('background: #f8fafc; color: #94a3b8;')
-    
-        cashflow = file_cfg.get('cashflow_file', '')
-        if cashflow:
-            self.cashflow_path.setText(cashflow)
-            self.cashflow_path.setStyleSheet('background: white; color: #1e293b;')
-            if Path(cashflow).suffix in ['.xlsx', '.xls']:
-                self.mode_hint.setText('💡 文件模式 → 将在已有文件中添加新Sheet')
-            else:
-                self.mode_hint.setText('💡 目录模式 → 将自动创建 公司名_时间戳.xlsx')
-    
-        # ===== 加载支出规则到 GUI =====
+        # 加载支出规则
         expense_rules = classification.expense_rules
         if expense_rules:
             lines = []
@@ -1114,21 +1396,10 @@ class MainWindow(QMainWindow):
         else:
             self.expense_rules.setText('')
     
-        # ===== 加载排除关键词到 GUI =====
-        exclude_keywords = classification.exclude_keywords
-        if exclude_keywords:
-            self.exclude_keywords.setText('\n'.join(exclude_keywords))
-        else:
-            self.exclude_keywords.setText('')
-    
-        # ===== 统一使用 _log_rules() 展示规则 =====
         self.append_log('📂 配置加载完成')
-        self._log_rules() 
+        self._log_rules()
     
     def build_config(self):
-        """从 GUI 控件构建配置字典"""
-        period_value = self.get_period_value()
-        
         rules = []
         for line in self.expense_rules.toPlainText().split('\n'):
             line = line.strip()
@@ -1145,39 +1416,63 @@ class MainWindow(QMainWindow):
                     'enabled': True
                 })
         
-        exclude = [s.strip() for s in self.exclude_keywords.toPlainText().split('\n') if s.strip()]
-        
-        banks = []
-        if self.bank_name.text().strip():
-            banks.append({'name': self.bank_name.text().strip()})
-        
         return {
             'app': {
-                'period_value': period_value,
+                'period_value': '',
                 'decimal_places': 2,
                 'validation_threshold': 0.01
             },
-            'company': {'banks': banks},
+            'company': {'banks': []},
             'file': {
-                'detail_path': self.detail_path.text().strip(),
-                'cashflow_file': self.cashflow_path.text().strip()
+                'single_files': [str(p) for p in self.single_files],
+                'summary_files': [str(p) for p in self.summary_files],
+                'single_cashflow_file': self.single_cashflow_path.text().strip(),
+                'summary_cashflow_file': self.summary_cashflow_path.text().strip()
             },
             'income_rules': self.config_manager.config.get('income_rules', []),
             'expense_rules': rules,
-            'contra_filter': {'include_keywords': [], 'exclude_keywords': exclude},
+            'allow_prefixes': ALLOW_PREFIXES,
             'column_mapping': {
-                '产品收入': 15, '服务收入': 16, '其他收入': 17,
-                '商品采购': 22, '运费': 23, '服务费': 24, '返点佣金': 25,
-                '研发_人工成本': 26, '研发_材料设备': 27, '研发_服务费': 28, '研发_委外': 29,
-                '销售_交通费': 30, '销售_住宿费': 31, '销售_车辆费': 32, '销售_市内交通': 33,
-                '销售_招待费': 34, '销售_服务费': 35, '销售_经销返点': 36, '销售_其他': 37,
-                '管理_办公费': 38, '管理_租金物业': 39, '管理_市内交通': 40,
-                '管理_招待费': 41, '管理_差旅费': 42, '管理_人员薪资': 43,
-                '管理_社保公积金': 44, '管理_员工福利': 45, '管理_其他': 46,
-                '财务_手续费': 47, '财务_结息': 48, '财务_贷款利息': 49,
-                '税金_增值税': 50, '税金_所得税': 51, '税金_印花税': 52, '税金_个税': 53,
-                '固资_办公设备': 54, '固资_办公家具': 55,
-                '营业外支出': 56, '罚款': 57, '违约金': 58
+                '产品收入': 15,
+                '服务收入': 16,
+                '其他收入': 17,
+                '主营业务支出_商品采购': 22,
+                '主营业务支出_运费': 23,
+                '主营业务支出_服务费': 24,
+                '主营业务支出_返点佣金': 25,
+                '研发费用_人工成本': 26,
+                '研发费用_材料设备': 27,
+                '研发费用_服务费': 28,
+                '研发费用_委外': 29,
+                '销售费用_飞机动车等': 30,
+                '销售费用_住宿费': 31,
+                '销售费用_车辆费': 32,
+                '销售费用_市内交通': 33,
+                '销售费用_招待公关': 34,
+                '销售费用_服务费': 35,
+                '销售费用_经销返点': 36,
+                '销售费用_其他': 37,
+                '管理费用_办公费': 38,
+                '管理费用_办公租金物业费水电费': 39,
+                '管理费用_市内交通': 40,
+                '管理费用_招待公关': 41,
+                '管理费用_飞机动车等': 42,
+                '管理费用_人员薪资': 43,
+                '管理费用_社保公积金': 44,
+                '管理费用_员工福利': 45,
+                '管理费用_其他': 46,
+                '财务费用_手续费': 47,
+                '财务费用_结息': 48,
+                '财务费用_贷款利息': 49,
+                '应缴税金_增值税及附加': 50,
+                '应缴税金_所得税': 51,
+                '应缴税金_印花税': 52,
+                '应缴税金_工资个税': 53,
+                '应缴税金_劳务个税': 54,
+                '有形资产_办公设备': 55,
+                '有形资产_办公家具包含车': 56,
+                '营业外支出_违约金': 57,
+                '营业外支出_罚款': 58,
             },
             'data': {
                 'skip_vouchers': ['期初余额', '本期合计', '本年累计', ''],
@@ -1194,14 +1489,15 @@ class MainWindow(QMainWindow):
     def auto_save(self):
         try:
             config = self.build_config()
+            config['allow_prefixes'] = ALLOW_PREFIXES
             self.config_manager.save_config(config)
-            # 重新加载 Config 单例
             self.config_obj.reload_classification()
+            self.config_obj.data.classification.allow_prefixes = ALLOW_PREFIXES
             self.append_log('💾 配置已自动保存并重新加载')
         except Exception as e:
             logger.error(f"自动保存失败: {e}")
     
-    # ==================== 日志 ====================
+    # ==================== 运行 ====================
     def append_log(self, msg):
         self.log_text.append(f'[{datetime.now().strftime("%H:%M:%S")}] {msg}')
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
@@ -1211,19 +1507,28 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(value)
         self.progress_label.setText(label)
     
-
     def run_generator(self):
-        if not self.bank_name.text().strip():
-            QMessageBox.warning(self, '提示', '请输入银行名称')
-            return
-        if not self.cashflow_path.text().strip():
+        """判断当前Tab并运行"""
+        current_tab = self.tabs.currentIndex()
+        
+        if current_tab == 0:
+            self._run_single_mode()
+        elif current_tab == 1:
+            self._run_summary_mode()
+        else:
+            QMessageBox.warning(self, '提示', '请在"单文件生成"或"汇总模式"Tab中操作')
+    
+    # gui_main.py - 修改 _run_single_mode 和 _run_summary_mode
+
+    def _run_single_mode(self):
+        """运行单文件生成模式 - 追加Sheet到已有文件"""
+        if not self.single_cashflow_path.text().strip():
             QMessageBox.warning(self, '提示', '请选择输出目录或现金流表文件')
             return
-        if not Path(self.detail_path.text().strip()).exists():
-            QMessageBox.warning(self, '提示', '明细账文件不存在')
+        if not self.single_files:
+            QMessageBox.warning(self, '提示', '请选择明细账文件（支持Ctrl多选）')
             return
-
-        # ===== 验证规则 =====
+    
         is_valid, errors = self._check_rules()
         if not is_valid:
             error_msg = "支出规则存在语法错误，请修正后重试：\n\n"
@@ -1232,77 +1537,135 @@ class MainWindow(QMainWindow):
             error_msg += "\n💡 提示：点击「验证规则」按钮可检查语法错误"
             QMessageBox.warning(self, '规则错误', error_msg)
             return
-
-        # ===== 保存配置 =====
-        config = self.build_config()
-        self.config_manager.save_config(config)
-        self.config_obj.reload_classification()
     
-        # ===== 在日志中展示规则（统一格式） =====
-        self.append_log('📋 规则已重新加载')
-        self._log_rules()
+        self._save_config()
     
-        # ===== 继续执行 =====
-    
-        # ===== 继续执行 =====
-        bank = self.bank_name.text().strip()
-        cashflow_input = self.cashflow_path.text().strip()
+        cashflow_input = self.single_cashflow_path.text().strip()
         cashflow_path = Path(cashflow_input)
     
+        # ===== 确定输出文件 =====
         if cashflow_path.suffix in ['.xlsx', '.xls']:
+            # 用户选择了已有文件
             cashflow_file = cashflow_path
             self.append_log(f'📄 使用已有现金流表: {cashflow_file.name}')
         else:
+            # 用户选择了目录，创建新文件
             dir_path = cashflow_path
-            detail_name = Path(self.detail_path.text().strip()).stem
-            clean_name = detail_name.replace('明细账', '').replace('明细', '').strip()
-            if '_' in clean_name:
-                parts = clean_name.split('_')
-                company_name = parts[0].strip()
+            # 检查目录下是否已有现金流表文件
+            existing_files = list(dir_path.glob("现金流表_*.xlsx"))
+            if existing_files:
+                # 使用最新的已有文件
+                cashflow_file = sorted(existing_files, key=lambda x: x.stat().st_mtime)[-1]
+                self.append_log(f'📄 使用已有现金流表: {cashflow_file.name}')
             else:
-                company_name = clean_name
-            if not company_name:
-                company_name = '现金流表'
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"{company_name}_{timestamp}.xlsx"
-            cashflow_file = dir_path / filename
-            self.append_log(f'📂 目录模式: {dir_path}')
-            self.append_log(f'📄 将创建: {filename}')
+                # 创建新文件
+                first_name = self.single_files[0].stem
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"现金流表_{timestamp}.xlsx"
+                cashflow_file = dir_path / filename
+                self.append_log(f'📂 目录模式，创建新文件: {filename}')
     
         cashflow_file.parent.mkdir(parents=True, exist_ok=True)
     
-        detail_path = Path(self.detail_path.text().strip())
-        period_value = self.get_period_value()
-        quarter = self.get_quarter_code()
-        sheet_name = f"{bank}_{period_value}"
-    
-        self.append_log(f'📄 现金流表: {cashflow_file}')
-        self.append_log(f'📅 Sheet: {sheet_name}')
-    
-        self.append_log(f'🚀 开始生成...')
-        self.append_log(f'📁 明细账: {detail_path.name}')
-    
-        self.progress_bar.setValue(0)
-        self.progress_label.setText('准备中...')
+        self.append_log(f'📄 输出文件: {cashflow_file}')
+        self.append_log(f'📁 共 {len(self.single_files)} 个明细账文件待处理')
+        self.append_log(f'📌 模式: 追加Sheet到已有文件')
     
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText('准备中...')
     
-        self.worker_thread = WorkerThread(
-            detail_path, bank, period_value, quarter,
-            sheet_name, cashflow_file
+        self.single_worker = WorkerThread(
+            self.single_files,
+            cashflow_file,
+            mode="single"
         )
-        self.worker_thread.progress_updated.connect(self.update_progress)
-        self.worker_thread.log_updated.connect(self.append_log)
-        self.worker_thread.finished.connect(self.on_finished)
-        self.worker_thread.start() 
+        self.single_worker.progress_updated.connect(self.update_progress)
+        self.single_worker.log_updated.connect(self.append_log)
+        self.single_worker.file_progress.connect(self._on_file_progress)
+        self.single_worker.finished.connect(lambda success, result: self._on_single_finished(success, result))
+        self.single_worker.start()
+
+
+    def _run_summary_mode(self):
+        """运行汇总模式 - 追加/更新汇总表Sheet"""
+        if not self.summary_cashflow_path.text().strip():
+            QMessageBox.warning(self, '提示', '请选择输出目录或汇总表文件')
+            return
+        if not self.summary_files:
+            QMessageBox.warning(self, '提示', '请选择明细账文件（支持Ctrl多选）')
+            return
     
-    def on_finished(self, success, result):
+        is_valid, errors = self._check_rules()
+        if not is_valid:
+            error_msg = "支出规则存在语法错误，请修正后重试：\n\n"
+            for err in errors:
+                error_msg += f"  • {err}\n"
+            error_msg += "\n💡 提示：点击「验证规则」按钮可检查语法错误"
+            QMessageBox.warning(self, '规则错误', error_msg)
+            return
+    
+        self._save_config()
+    
+        cashflow_input = self.summary_cashflow_path.text().strip()
+        cashflow_path = Path(cashflow_input)
+    
+        # ===== 确定输出文件 =====
+        if cashflow_path.suffix in ['.xlsx', '.xls']:
+            # 用户选择了已有文件
+            cashflow_file = cashflow_path
+            self.append_log(f'📄 使用已有文件: {cashflow_file.name}')
+        else:
+            # 用户选择了目录，创建新文件
+            dir_path = cashflow_path
+            # 检查目录下是否已有现金流表文件
+            existing_files = list(dir_path.glob("现金流表_*.xlsx"))
+            if existing_files:
+                # 使用最新的已有文件
+                cashflow_file = sorted(existing_files, key=lambda x: x.stat().st_mtime)[-1]
+                self.append_log(f'📄 使用已有现金流表: {cashflow_file.name}')
+            else:
+                # 创建新文件
+                first_name = self.summary_files[0].stem
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"现金流表_{timestamp}.xlsx"
+                cashflow_file = dir_path / filename
+                self.append_log(f'📂 目录模式，创建新文件: {filename}')
+    
+        cashflow_file.parent.mkdir(parents=True, exist_ok=True)
+    
+        self.append_log(f'📊 汇总模式: 共 {len(self.summary_files)} 个文件')
+        self.append_log(f'📄 输出文件: {cashflow_file}')
+        self.append_log(f'📌 模式: 更新"汇总表"Sheet')
+    
+        self.run_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText('准备中...')
+    
+        self.summary_worker = WorkerThread(
+            self.summary_files,
+            cashflow_file,
+            mode="summary"
+        )
+        self.summary_worker.progress_updated.connect(self.update_progress)
+        self.summary_worker.log_updated.connect(self.append_log)
+        self.summary_worker.file_progress.connect(self._on_file_progress)
+        self.summary_worker.finished.connect(lambda success, result: self._on_summary_finished(success, result))
+        self.summary_worker.start() 
+    
+    def _on_file_progress(self, current, total, filename):
+        self.progress_label.setText(f'[{current}/{total}] {filename}')
+    
+    def _on_single_finished(self, success, result):
+        """单文件生成完成回调"""
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.single_worker = None
         
         if success:
-            self.progress_label.setText('✅ 完成')
+            self.progress_label.setText('✅ 单文件生成完成')
             self.progress_bar.setStyleSheet("""
                 QProgressBar::chunk {
                     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -1310,7 +1673,7 @@ class MainWindow(QMainWindow):
                     border-radius: 6px;
                 }
             """)
-            QMessageBox.information(self, '完成', f'报表已生成\n\n{result}')
+            QMessageBox.information(self, '完成', f'单文件生成完成\n\n{result}')
         else:
             self.progress_label.setText('❌ 失败')
             self.progress_bar.setStyleSheet("""
@@ -1321,29 +1684,69 @@ class MainWindow(QMainWindow):
                 }
             """)
             if result != '已停止':
-                QMessageBox.warning(self, '错误', f'生成失败\n\n{result}')
+                QMessageBox.warning(self, '错误', f'处理失败\n\n{result}')
+    
+    def _on_summary_finished(self, success, result):
+        """汇总模式完成回调"""
+        self.run_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.summary_worker = None
         
-        self.worker_thread = None
+        if success:
+            self.progress_label.setText('✅ 汇总完成')
+            self.progress_bar.setStyleSheet("""
+                QProgressBar::chunk {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #059669, stop:1 #10b981);
+                    border-radius: 6px;
+                }
+            """)
+            QMessageBox.information(self, '完成', f'汇总完成\n\n{result}')
+        else:
+            self.progress_label.setText('❌ 汇总失败')
+            self.progress_bar.setStyleSheet("""
+                QProgressBar::chunk {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #dc2626, stop:1 #ef4444);
+                    border-radius: 6px;
+                }
+            """)
+            if result != '已停止':
+                QMessageBox.warning(self, '错误', f'汇总失败\n\n{result}')
     
     def stop_generator(self):
-        if self.worker_thread and self.worker_thread.isRunning():
-            self.worker_thread.stop()
-            self.worker_thread.wait()
-            self.worker_thread = None
-            self.run_btn.setEnabled(True)
-            self.stop_btn.setEnabled(False)
-            self.append_log('⏹ 已停止')
-            self.progress_label.setText('已停止')
-            self.progress_bar.setValue(0)
+        """停止当前运行的线程"""
+        if self.single_worker and self.single_worker.isRunning():
+            self.single_worker.stop()
+            self.single_worker.wait()
+            self.single_worker = None
+            self.append_log('⏹ 单文件生成已停止')
+        elif self.summary_worker and self.summary_worker.isRunning():
+            self.summary_worker.stop()
+            self.summary_worker.wait()
+            self.summary_worker = None
+            self.append_log('⏹ 汇总已停止')
+        else:
+            return
+        
+        self.run_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.progress_label.setText('已停止')
+        self.progress_bar.setValue(0)
+    
+    def _save_config(self):
+        """保存配置"""
+        config = self.build_config()
+        config['allow_prefixes'] = ALLOW_PREFIXES
+        self.config_manager.save_config(config)
+        self.config_obj.reload_classification()
+        self.config_obj.data.classification.allow_prefixes = ALLOW_PREFIXES
+        self.append_log('📋 规则已重新加载')
+        self._log_rules()
+    
     def _check_rules(self):
-        """
-        检查规则语法是否正确
-        返回: (is_valid, errors_list)
-        """
         text = self.expense_rules.toPlainText()
         errors = []
-    
-        # 获取所有行，保留原始行号
         lines = text.split('\n')
     
         for i, line in enumerate(lines, 1):
@@ -1352,17 +1755,14 @@ class MainWindow(QMainWindow):
             if not line:
                 continue
         
-            # ===== 检查1: 是否包含冒号 =====
             if ':' not in line and '：' not in line:
                 errors.append(f"第{i}行: 缺少冒号「:」 → \"{original_line}\"")
                 continue
         
-            # ===== 检查2: 是否使用了中文冒号 =====
             if '：' in line:
                 errors.append(f"第{i}行: 使用了中文冒号「：」，请改为英文冒号「:」 → \"{original_line}\"")
                 continue
         
-            # ===== 检查3: 分割并验证 =====
             parts = line.split(':', 1)
             if len(parts) != 2:
                 errors.append(f"第{i}行: 格式错误 → \"{original_line}\"")
@@ -1377,19 +1777,16 @@ class MainWindow(QMainWindow):
             if not keywords:
                 errors.append(f"第{i}行: 关键词为空 → \"{original_line}\"")
         
-            # ===== 检查4: 关键词中是否有中文逗号 =====
             if '，' in keywords:
                 errors.append(f"第{i}行: 关键词中使用了中文逗号「，」，请改为英文逗号「,」 → \"{original_line}\"")
         
-            # ===== 检查5: 是否有连续逗号 =====
             if ',,' in keywords:
                 errors.append(f"第{i}行: 存在连续逗号 → \"{original_line}\"")
         
-            # ===== 检查6: 是否以逗号结尾 =====
             if keywords.endswith(','):
                 errors.append(f"第{i}行: 关键词末尾有多余逗号 → \"{original_line}\"")
     
-        return (len(errors) == 0, errors) 
+        return (len(errors) == 0, errors)
 
 
 def main():

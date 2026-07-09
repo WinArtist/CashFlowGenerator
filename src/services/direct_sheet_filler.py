@@ -4,6 +4,7 @@
 from typing import Optional
 from pathlib import Path
 from datetime import datetime, date
+from decimal import Decimal
 import re
 
 import sys
@@ -24,9 +25,10 @@ class JianhangQ2Filler:
             '交易时间': 2,
             '客户供应商': 19,
             '摘要': 21,
+            '余额': 18,  # R列
         })
     
-    def fill_quarter_data(self, template_path: str, report_data, quarter: str, source_file: str, sheet_name: str) -> Optional[str]:
+    def fill_quarter_data(self, template_path: str, report_data, quarter: str, source_file: str, sheet_name: str, opening_balance: Optional[Decimal] = None) -> Optional[str]:
         from openpyxl import load_workbook
         
         if not template_path:
@@ -46,6 +48,16 @@ class JianhangQ2Filler:
         
         ws = wb[sheet_name]
         
+        # ===== 填入期初余额到 R4 =====
+        if opening_balance is not None:
+            try:
+                ws.cell(row=4, column=18, value=float(opening_balance))
+                print(f"  ✅ 期初余额已填入 R4: {opening_balance:.2f}")
+            except Exception as e:
+                print(f"  ❌ 填入期初余额失败: {e}")
+        else:
+            print("  ⚠️ 未找到期初余额，R4 保持为空")
+        
         start_row = 5
         transactions = getattr(report_data, '_transactions', [])
         
@@ -56,7 +68,7 @@ class JianhangQ2Filler:
                 try:
                     self._fill_transaction_row(ws, row, trans)
                     filled_count += 1
-                except Exception:
+                except Exception as e:
                     continue
             
             print(f"  成功填入 {filled_count}/{len(transactions)} 笔交易")
@@ -79,25 +91,19 @@ class JianhangQ2Filler:
             return False
     
     def _should_fill_contra(self, contra_subject: str, summary: str = "") -> bool:
-        """
-        判断是否应该填充客户/供应商列
-        逻辑：
-        1. 排除规则优先（匹配对方科目或摘要）
-        2. 只要有对方科目，且不在排除规则中，就填充
-        """
+        """判断是否应该填充客户/供应商列（白名单模式）"""
         if not contra_subject:
             return False
         
         contra_subject = str(contra_subject)
-        summary = str(summary) if summary else ""
+        classification = self.config.data.classification
+        allow_prefixes = getattr(classification, 'allow_prefixes', ["1122", "1123", "2202", "2203"])
         
-        # ===== 1. 检查排除规则（匹配对方科目或摘要） =====
-        if self.config.data.classification.should_exclude_contra(contra_subject, summary):
-            return False
+        for prefix in allow_prefixes:
+            if contra_subject.startswith(prefix):
+                return True
         
-        # ===== 2. 只要有对方科目就填充 =====
-        # 不再限制只有应收/应付类
-        return True
+        return False
     
     def _extract_company_name(self, contra_subject: str) -> str:
         """从对方科目中提取公司名称"""
@@ -149,44 +155,36 @@ class JianhangQ2Filler:
                 date_value = trans.date.date()
             else:
                 date_value = trans.date
-            self._set_cell_value(ws, row, self.COL_INDEX['交易时间'], date_value)
+            self._set_cell_value(ws, row, self.COL_INDEX.get('交易时间', 2), date_value)
         
-        # ===== 对方科目 - S列（客户/供应商） =====
+        # ===== 对方科目 - S列（客户/供应商）- 白名单模式 =====
         contra_subject = getattr(trans, 'contra_subject', "")
         description = getattr(trans, 'description', "")
         
-        if contra_subject:
-            # 传入摘要，让排除规则也能匹配摘要
-            if self._should_fill_contra(contra_subject, description):
-                company_name = self._extract_company_name(contra_subject)
-                if company_name:
-                    self._set_cell_value(ws, row, self.COL_INDEX['客户供应商'], company_name)
-                else:
-                    # 如果提取不到公司名，但有对方科目，直接使用对方科目
-                    # 注意：排除规则已经检查过了，这里直接填充
-                    self._set_cell_value(ws, row, self.COL_INDEX['客户供应商'], contra_subject)
+        if self._should_fill_contra(contra_subject, description):
+            company_name = self._extract_company_name(contra_subject)
+            if company_name:
+                self._set_cell_value(ws, row, self.COL_INDEX.get('客户供应商', 19), company_name)
+            else:
+                self._set_cell_value(ws, row, self.COL_INDEX.get('客户供应商', 19), contra_subject)
         
         # 摘要 - U列
         if description:
             desc = str(description)
             if len(desc) > 50:
                 desc = desc[:47] + "..."
-            self._set_cell_value(ws, row, self.COL_INDEX['摘要'], desc)
+            self._set_cell_value(ws, row, self.COL_INDEX.get('摘要', 21), desc)
         
-        # 收入/支出分类
+        # ===== 余额 - R列 =====
+        if hasattr(trans, 'balance') and trans.balance is not None:
+            self._set_cell_value(ws, row, self.COL_INDEX.get('余额', 18), float(trans.balance))
+        
+        # ===== 收入分类 - 所有收入都填入"其他收入"列 =====
         if trans.is_income:
-            income_category = getattr(trans, 'income_category', None)
-            if not income_category:
-                income_type = getattr(trans, 'income_type', None)
-                if income_type in ["产品收入", "服务收入", "其他收入"]:
-                    income_category = income_type
-            
-            if income_category == "产品收入":
-                self._set_cell_value(ws, row, self.COL_INDEX['产品收入'], float(trans.amount))
-            elif income_category == "服务收入":
-                self._set_cell_value(ws, row, self.COL_INDEX['服务收入'], float(trans.amount))
-            else:
-                self._set_cell_value(ws, row, self.COL_INDEX['其他收入'], float(trans.amount))
+            # 所有收入都放入"其他收入"列（第17列）
+            self._set_cell_value(ws, row, self.COL_INDEX.get('其他收入', 17), float(trans.amount))
+        
+        # ===== 支出分类 =====
         else:
             expense_category = getattr(trans, 'expense_category', None)
             if expense_category:

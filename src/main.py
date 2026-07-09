@@ -3,6 +3,7 @@
 流程：检查数据 → 生成模板 → 填入数据
 """
 
+from decimal import Decimal
 import shutil
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from services.validator import DataValidator
 from services.reporter import ReportGenerator
 from services.direct_sheet_filler import JianhangQ2Filler
 from services.create_blank_template import create_template_from_detail
+from services.summary_service import SummaryService
 from models.transaction import ClassifiedTransaction
 
 
@@ -37,6 +39,13 @@ class CashFlowReportGenerator:
         print("=" * 60)
 
         expense_rules = self.config.data.classification.expense_rules
+        income_rules = self.config.data.classification.income_rules
+        print(f"📊 当前配置中的收入规则数量: {len(income_rules)}")
+        for i, rule in enumerate(income_rules):
+            keywords = []
+            for cr in rule.contra_rules:
+                keywords.extend(cr.keywords)
+            print(f"  {i+1}. {rule.category}: {keywords}")
         print(f"📊 当前配置中的支出规则数量: {len(expense_rules)}")
         for i, rule in enumerate(expense_rules):
             keywords = []
@@ -49,12 +58,13 @@ class CashFlowReportGenerator:
         self.project_root = PROJECT_ROOT
         self.quarter_mapper = self._build_quarter_mapper()
         self.data_loader = DataLoader(self.config, self.quarter_mapper)
-        self.aggregator = DataAggregator(self.config)  # 纯串行
+        self.aggregator = DataAggregator(self.config)
         self.validator = DataValidator(
             threshold=self.config.data.validation_threshold
         )
         self.reporter = ReportGenerator(self.config)
         self.filler = JianhangQ2Filler(self.config)
+        self.summary_service = SummaryService(self.config)
 
         # 状态记录
         self.transactions = []
@@ -104,17 +114,13 @@ class CashFlowReportGenerator:
     
     def get_output_dir(self) -> Path:
         """获取输出目录"""
-        # 如果用户指定了输出路径，使用其父目录
         if self._output_path:
             return self._output_path.parent
         return self.project_root / self.config.file.output_dir
     
     def get_template_path(self) -> Path:
         """获取模板路径 - 支持打包环境从内存读取"""
-    
-        # 1. 判断是否在打包环境中
         if getattr(sys, 'frozen', False):
-            # 打包环境：从 _MEIPASS 获取模板
             if hasattr(sys, '_MEIPASS'):
                 meipass = Path(sys._MEIPASS)
                 template_path = meipass / 'templates' / self.config.file.template_filename
@@ -122,21 +128,18 @@ class CashFlowReportGenerator:
                     print(f"✅ 从打包资源加载模板: {template_path}")
                     return template_path
         
-            # 2. 尝试从 exe 同级目录获取
             exe_dir = Path(sys.executable).parent
             template_path = exe_dir / 'templates' / self.config.file.template_filename
             if template_path.exists():
                 print(f"✅ 从 exe 目录加载模板: {template_path}")
                 return template_path
         
-            # 3. 尝试从临时目录复制（如果之前解压过）
             temp_dir = Path(tempfile.gettempdir()) / 'cashflow_template'
             template_path = temp_dir / self.config.file.template_filename
             if template_path.exists():
                 print(f"✅ 从临时目录加载模板: {template_path}")
                 return template_path
         
-            # 4. 从 _MEIPASS 复制到临时目录（确保后续使用）
             if hasattr(sys, '_MEIPASS'):
                 meipass = Path(sys._MEIPASS)
                 source = meipass / 'templates' / self.config.file.template_filename
@@ -147,18 +150,17 @@ class CashFlowReportGenerator:
                     print(f"✅ 模板已复制到临时目录: {dest}")
                     return dest
     
-        # 开发环境：使用项目目录
         template_path = self.project_root / self.config.file.template_dir / self.config.file.template_filename
         if template_path.exists():
             print(f"✅ 从项目目录加载模板: {template_path}")
             return template_path
     
         print(f"❌ 模板文件不存在: {template_path}")
-        return template_path 
+        return template_path
+    
     def scan_input_files(self) -> List[Path]:
         """扫描input目录下的所有Excel文件"""
         input_dir = self.get_input_dir()
-        
         if not input_dir.exists():
             return []
         
@@ -166,7 +168,6 @@ class CashFlowReportGenerator:
         for ext in self.config.file.supported_extensions:
             excel_files.extend(input_dir.glob(f"*{ext}"))
         
-        # 过滤临时文件
         excel_files = [f for f in excel_files if not f.name.startswith('~$')]
         return sorted(excel_files, key=lambda x: x.stat().st_mtime, reverse=True)
     
@@ -245,15 +246,11 @@ class CashFlowReportGenerator:
         
         return True
     
-    
     def generate_template(self, detail_path: Path, bank_name: str, period: str, 
                       output_filename: str, sheet_name: str) -> Optional[str]:
-        """
-        根据明细账生成模板
-        """
+        """根据明细账生成模板"""
         print(f"\n📁 生成模板...")
 
-        # 验证参数
         if not bank_name:
             raise ValueError("银行名称未设置")
         if not period:
@@ -263,7 +260,6 @@ class CashFlowReportGenerator:
         if not sheet_name:
             raise ValueError("工作表名称未设置")
 
-        # ===== 获取模板路径（支持打包环境） =====
         template_path = self.get_template_path()
     
         if not template_path or not template_path.exists():
@@ -273,7 +269,6 @@ class CashFlowReportGenerator:
     
         print(f"✅ 使用模板: {template_path}")
 
-        # 使用用户指定的输出路径
         if self._output_path:
             output_dir = str(self._output_path.parent)
             filename = self._output_path.name
@@ -283,7 +278,6 @@ class CashFlowReportGenerator:
             filename = output_filename
             print(f"📂 使用默认输出目录: {output_dir}")
 
-        # 确保目录存在
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         result = create_template_from_detail(
@@ -300,74 +294,51 @@ class CashFlowReportGenerator:
             print(f"✅ 模板已生成: {result}")
             self.template_path = result
 
-        return result 
+        return result
  
-    def fill_data(self, template_path: str, transactions: List, quarter: str, sheet_name: str) -> Optional[str]:
-        """
-        将数据填入模板
-        
-        Args:
-            template_path: 模板文件路径
-            transactions: 交易数据列表
-            quarter: 季度（Q1/Q2/Q3/Q4）（必须）
-            sheet_name: 要填充的工作表名称（必须）
-        """
-        # 验证参数
+    def fill_data(self, template_path: str, transactions: List, quarter: str, sheet_name: str, opening_balance: Optional[Decimal] = None) -> Optional[str]:
+        """将数据填入模板"""
         if not template_path:
             raise ValueError("模板文件路径未设置")
         if not quarter:
             raise ValueError("季度未设置")
         if not sheet_name:
             raise ValueError("工作表名称未设置")
-        
+    
         print(f"\n📝 填入数据到工作表: {sheet_name}")
-        
-        # 先对交易进行分类
+    
         classified_transactions = []
         for trans in transactions:
             if isinstance(trans, ClassifiedTransaction):
                 classified_transactions.append(trans)
             else:
-                # 手动分类
                 classified = self._classify_transaction(trans)
                 classified_transactions.append(classified)
-        
-        # 使用分类后的交易聚合数据
+    
         report_data = self.aggregator.aggregate(classified_transactions)
-        
-        # 打印汇总信息
+    
         print(f"  收入总计: ¥{report_data.total_income:,.2f}")
         print(f"  支出总计: ¥{report_data.total_expense:,.2f}")
         print(f"  净现金流: ¥{report_data.net_flow:,.2f}")
-        
-        if report_data.income:
-            print("  收入分类:")
-            for k, v in report_data.income.items():
-                if v > 0:
-                    print(f"    {k}: ¥{v:,.2f}")
-        
-        if report_data.expense:
-            print("  支出分类:")
-            for k, v in report_data.expense.items():
-                if v > 0:
-                    print(f"    {k}: ¥{v:,.2f}")
-        
-        # 将分类后的交易保存到report_data中用于逐行填充
+    
+        if opening_balance is not None:
+            print(f"  期初余额: ¥{opening_balance:,.2f}")
+    
         report_data._transactions = classified_transactions
-        
-        # 填入数据
+    
         result = self.filler.fill_quarter_data(
             template_path=template_path,
             report_data=report_data,
             quarter=quarter,
             source_file=Path(template_path).name,
-            sheet_name=sheet_name
+            sheet_name=sheet_name,
+            opening_balance=opening_balance
         )
-        
+    
         if result:
             print(f"✅ 数据已填入: {result}")
             self.output_path = result
-        
+    
         return result
     
     def _classify_transaction(self, trans) -> ClassifiedTransaction:
@@ -438,7 +409,6 @@ class CashFlowReportGenerator:
         print(f"  净现金流: ¥{total_income - total_expense:,.2f}")
         print("=" * 60)
         
-        # 显示前5笔交易示例
         print("\n前5笔交易示例:")
         print("-" * 80)
         print(f"{'序号':<6} {'日期':<12} {'摘要':<30} {'金额':<15} {'类型':<10}")
@@ -452,9 +422,7 @@ class CashFlowReportGenerator:
         print("-" * 80)
     
     def run_full_flow(self, input_file: Path, quarter: str) -> bool:
-        """
-        执行完整流程：检查数据 → 生成模板 → 填入数据
-        """
+        """执行完整流程：检查数据 → 生成模板 → 填入数据"""
         print("\n" + "=" * 60)
         print("    开始执行完整流程")
         print(f"    输入文件: {input_file.name}")
@@ -463,7 +431,6 @@ class CashFlowReportGenerator:
         print("=" * 60)
 
         try:
-            # ===== 验证所有必要参数 =====
             if not self.bank_name:
                 raise ValueError("银行名称未设置 (bank_name)")
             if not self.period_value:
@@ -480,7 +447,18 @@ class CashFlowReportGenerator:
 
             # 步骤1: 加载数据
             print("\n📊 步骤1: 加载数据...")
-            transactions = self.load_transactions(input_file)
+            all_transactions = self.data_loader.load_from_files([str(input_file)])
+            opening_balance = self._extract_opening_balance_from_file(input_file)
+            
+            if opening_balance is None:
+                opening_balance = self._find_opening_balance(all_transactions)
+            
+            if opening_balance is None:
+                print("  ⚠️ 未找到期初余额，使用 0")
+                opening_balance = Decimal(0)
+
+            transactions = all_transactions
+        
             if not self.validate_transactions(transactions):
                 return False
             self.transactions = transactions
@@ -502,7 +480,7 @@ class CashFlowReportGenerator:
 
             # 步骤3: 填入数据
             print("\n📝 步骤3: 填入数据...")
-            filled_path = self.fill_data(template_path, transactions, quarter, self.sheet_name)
+            filled_path = self.fill_data(template_path, transactions, quarter, self.sheet_name, opening_balance)
             if not filled_path:
                 print("❌ 数据填入失败")
                 return False
@@ -512,13 +490,114 @@ class CashFlowReportGenerator:
             print("✅ 全部完成!")
             print(f"📁 模板文件: {template_path}")
             print(f"📁 填入文件: {filled_path}")
+            if opening_balance is not None:
+                print(f"📊 期初余额: ¥{opening_balance:,.2f}")
             print("=" * 60)
 
             return True
-        
+    
         except Exception as e:
             import traceback
             print(f"❌ run_full_flow 异常: {e}")
+            print(traceback.format_exc())
+            return False
+
+    def _extract_opening_balance_from_file(self, file_path: Path) -> Optional[Decimal]:
+        """直接从明细账文件提取期初余额（第6行I列）"""
+        try:
+            import pandas as pd
+            df = pd.read_excel(str(file_path), header=None, dtype=str)
+            
+            if len(df) > 5 and len(df.iloc[5]) > 8:
+                val = df.iloc[5, 8]
+                if pd.notna(val):
+                    clean_val = str(val).replace(',', '').replace(' ', '').strip()
+                    result = Decimal(clean_val)
+                    print(f"  📊 期初余额（第6行I列）: {result:.2f}")
+                    return result
+            
+            for row_idx in range(min(10, len(df))):
+                row = df.iloc[row_idx]
+                for col_idx in range(min(10, len(row))):
+                    cell_val = str(row.iloc[col_idx]) if pd.notna(row.iloc[col_idx]) else ''
+                    if '期初余额' in cell_val:
+                        if len(row) > 8:
+                            balance_val = row.iloc[8]
+                            if pd.notna(balance_val):
+                                clean_val = str(balance_val).replace(',', '').replace(' ', '').strip()
+                                result = Decimal(clean_val)
+                                print(f"  📊 期初余额（查找'期初余额'）: {result:.2f}")
+                                return result
+            
+            return None
+        except Exception as e:
+            print(f"  ❌ 提取期初余额失败: {e}")
+            return None
+
+    def _find_opening_balance(self, transactions: List) -> Optional[Decimal]:
+        """从交易列表中查找期初余额"""
+        for trans in transactions:
+            if hasattr(trans, 'voucher') and trans.voucher:
+                if '期初余额' in trans.voucher:
+                    return trans.amount
+            if hasattr(trans, 'description') and trans.description:
+                if '期初余额' in trans.description:
+                    return trans.amount
+        return None
+
+    def run_summary(self, file_paths: List[Path], output_path: Optional[Path] = None) -> bool:
+        """执行汇总功能：将多个明细账文件汇总到汇总表"""
+        print("\n" + "=" * 60)
+        print("    开始执行汇总")
+        print(f"    文件数量: {len(file_paths)}")
+        print("=" * 60)
+    
+        if not file_paths:
+            print("❌ 没有文件需要汇总")
+            return False
+    
+        try:
+            if output_path is None:
+                output_dir = file_paths[0].parent
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_path = output_dir / f"汇总表_{timestamp}.xlsx"
+            else:
+                output_path = Path(output_path)
+                output_dir = output_path.parent
+        
+            output_dir.mkdir(parents=True, exist_ok=True)
+        
+            template_path = self.get_template_path()
+            if not template_path or not template_path.exists():
+                print(f"❌ 模板文件不存在: {template_path}")
+                return False
+        
+            # ===== 关键修改：只在文件不存在时复制模板 =====
+            if not output_path.exists():
+                shutil.copy2(template_path, output_path)
+                print(f"📄 已创建新文件: {output_path}")
+            else:
+                print(f"📄 使用已有文件: {output_path}")
+        
+            # ===== 调用汇总服务 =====
+            result = self.summary_service.fill_summary_sheet(
+                str(output_path),
+                file_paths,
+                self.config.data.classification
+            )
+        
+            if result:
+                print(f"\n✅ 汇总完成!")
+                print(f"📁 输出文件: {result}")
+                self.output_path = result
+                return True
+            else:
+                print("❌ 汇总失败")
+                return False
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ 汇总异常: {e}")
             print(traceback.format_exc())
             return False 
 
@@ -527,9 +606,9 @@ def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='现金流量报表生成器')
     parser.add_argument('--mode', '-m', 
-                        choices=['full', 'template', 'fill', 'report'],
+                        choices=['full', 'template', 'fill', 'report', 'summary'],
                         default='full', 
-                        help='运行模式: full(完整流程), template(仅生成模板), fill(仅填入数据), report(仅生成报表)')
+                        help='运行模式: full(完整流程), template(仅生成模板), fill(仅填入数据), report(仅生成报表), summary(汇总模式)')
     parser.add_argument('--input', '-i', 
                         help='输入文件路径（指定则跳过文件选择）')
     parser.add_argument('--template', '-t', 
@@ -546,7 +625,6 @@ def main():
     
     args = parser.parse_args()
     
-    # 环境映射
     env_map = {
         'dev': Environment.DEVELOPMENT,
         'test': Environment.TESTING,
@@ -563,7 +641,6 @@ def main():
     print(f"    项目根目录: {PROJECT_ROOT}")
     print("=" * 60)
     
-    # 检查并创建必要目录
     input_dir = generator.get_input_dir()
     if not input_dir.exists():
         input_dir.mkdir(parents=True, exist_ok=True)
@@ -575,7 +652,23 @@ def main():
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 确定输入文件
+    if args.mode == 'summary':
+        # 汇总模式
+        print("\n" + "=" * 60)
+        print("    模式: 汇总模式")
+        print("=" * 60)
+        
+        if args.input:
+            input_files = [Path(args.input)]
+        else:
+            input_files = generator.scan_input_files()
+            if not input_files:
+                print("❌ 没有找到Excel文件")
+                return 1
+        
+        result = generator.run_summary(input_files, Path(args.output) if args.output else None)
+        return 0 if result else 1
+    
     if args.input:
         input_file = Path(args.input)
         if not input_file.exists():
@@ -587,9 +680,7 @@ def main():
         if input_file is None:
             return 1
     
-    # 根据模式执行
     if args.mode == 'template':
-        # 仅生成模板
         print("\n" + "=" * 60)
         print("    模式: 仅生成模板")
         print("=" * 60)
@@ -600,17 +691,14 @@ def main():
         return 0
     
     if args.mode == 'fill':
-        # 仅填入数据
         print("\n" + "=" * 60)
         print("    模式: 仅填入数据")
         print("=" * 60)
         
-        # 先加载数据
         transactions = generator.load_transactions(input_file)
         if not generator.validate_transactions(transactions):
             return 1
         
-        # 确定模板文件
         template_path = args.template or generator.template_path or str(generator.get_template_path())
         if not Path(template_path).exists():
             print(f"❌ 模板文件不存在: {template_path}")
@@ -623,7 +711,6 @@ def main():
         return 0
     
     if args.mode == 'report':
-        # 仅生成报表
         print("\n" + "=" * 60)
         print("    模式: 仅生成报表")
         print("=" * 60)

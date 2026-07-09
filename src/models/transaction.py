@@ -37,6 +37,7 @@ class EnhancedTransaction(Transaction):
     quarter_confidence: float = 0.0
     quarter_strategy: str = ""
     quarter_matched_rule: Optional[str] = None
+    balance: Optional[Decimal] = None  # 余额字段
     
     def __post_init__(self):
         """调用父类的 __post_init__"""

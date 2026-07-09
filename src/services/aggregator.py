@@ -76,7 +76,8 @@ class DataAggregator:
             income_cat = None
             expense_cat = None
             if trans.is_income:
-                income_cat = self._classify_income(trans)
+                # ===== 所有收入统一归入"其他收入" =====
+                income_cat = "其他收入"
             else:
                 expense_cat = self._classify_expense(trans)
             if len(self._category_cache) < 20000:
@@ -98,22 +99,23 @@ class DataAggregator:
             quarter_confidence=getattr(trans, 'quarter_confidence', 0.0),
             quarter_strategy=getattr(trans, 'quarter_strategy', ""),
             quarter_matched_rule=getattr(trans, 'quarter_matched_rule', None),
-            income_category=income_cat,
+            # ===== 收入统一为"其他收入" =====
+            income_category="其他收入" if trans.is_income else income_cat,
             expense_category=expense_cat,
             classification_confidence=0.8
         )
     
     def _classify_income(self, trans) -> str:
-        contra = getattr(trans, 'contra_subject', "") or ""
-        desc = trans.description or ""
-        category = self.classification_config.get_category_by_contra(contra, desc, is_income=True)
-        return category if category else "其他收入"
+        """分类收入 - 所有收入统一归入其他收入"""
+        # ===== 所有收入统一归入"其他收入" =====
+        return "其他收入"
     
     def _classify_expense(self, trans) -> str:
+        """分类支出 - 复用 classification_config 逻辑"""
         contra = getattr(trans, 'contra_subject', "") or ""
         desc = trans.description or ""
         category = self.classification_config.get_category_by_contra(contra, desc, is_income=False)
-        return category if category else "管理_其他"
+        return category if category else "管理费用_其他"
     
     def get_column_for_category(self, category: str) -> int:
         return self.classification_config.column_mapping.get(category, None)

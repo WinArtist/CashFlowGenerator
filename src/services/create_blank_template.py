@@ -317,7 +317,9 @@ def create_template_from_detail(
     output_filename: str,
     sheet_name: str
 ) -> str:
-    """根据明细账数据量生成模板 - 优化版"""
+    """
+    根据明细账数据量生成模板 - 支持追加到已有文件
+    """
     detail_path = Path(detail_path)
     template_path = Path(template_path)
     
@@ -341,30 +343,46 @@ def create_template_from_detail(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / output_filename
+    
+    # ===== 判断文件是否存在 =====
     file_exists = output_path.exists()
     
-    if file_exists:
-        print(f"\n📁 文件已存在: {output_path}")
-        print(f"📄 将在该文件中添加新Sheet: {sheet_name}")
-        wb = load_workbook(output_path)
-        if sheet_name in wb.sheetnames:
-            print(f"⚠️ Sheet '{sheet_name}' 已存在，将被覆盖")
-            wb.remove(wb[sheet_name])
-    else:
-        print(f"\n📁 创建新文件: {output_path}")
-        shutil.copy2(template_path, output_path)
-        wb = load_workbook(output_path)
-    
-    # 从模板复制工作表
+    # ===== 加载模板工作簿 =====
     template_wb = load_workbook(template_path)
     if '原始表' not in template_wb.sheetnames:
         print(f"❌ 模板文件中未找到 '原始表'")
         return None
     
     template_ws = template_wb['原始表']
+    
+    # ===== 加载或创建工作簿 =====
+    if file_exists:
+        print(f"\n📁 文件已存在: {output_path}")
+        print(f"📄 将在该文件中添加新Sheet: {sheet_name}")
+        wb = load_workbook(output_path)
+        
+        # 检查同名Sheet是否存在，存在则删除
+        if sheet_name in wb.sheetnames:
+            print(f"⚠️ Sheet '{sheet_name}' 已存在，将被覆盖")
+            std = wb[sheet_name]
+            wb.remove(std)
+    else:
+        print(f"\n📁 创建新文件: {output_path}")
+        # 复制模板作为基础
+        shutil.copy2(template_path, output_path)
+        wb = load_workbook(output_path)
+        
+        # 删除模板自带的"原始表"（我们要用自定义的）
+        if '原始表' in wb.sheetnames:
+            wb.remove(wb['原始表'])
+        # 删除"汇总表"（保留模板中的结构）
+        # 注意：如果模板有"汇总表"，保留它
+        # 如果有其他不需要的Sheet，可以删除
+    
+    # ===== 创建新Sheet =====
     new_ws = wb.create_sheet(title="原始表_临时")
     
-    # 批量复制单元格
+    # 复制模板"原始表"的内容到新Sheet
     max_row, max_col = template_ws.max_row, template_ws.max_column
     for row in range(1, max_row + 1):
         for col in range(1, max_col + 1):
@@ -385,7 +403,10 @@ def create_template_from_detail(
     
     # 复制合并单元格
     for merged_range in template_ws.merged_cells.ranges:
-        new_ws.merge_cells(str(merged_range))
+        try:
+            new_ws.merge_cells(str(merged_range))
+        except:
+            pass
     
     # 复制列宽和行高
     for col in template_ws.column_dimensions:
@@ -393,10 +414,9 @@ def create_template_from_detail(
     for row in template_ws.row_dimensions:
         new_ws.row_dimensions[row].height = template_ws.row_dimensions[row].height
     
-    template_wb.close()
     ws = new_ws
     
-    # 处理数据
+    # ===== 处理数据 =====
     style_data = learn_protected_rows_styles(ws, PROTECTED_ROWS_START, PROTECTED_ROWS_END)
     
     # 删除原有行
@@ -435,15 +455,25 @@ def create_template_from_detail(
     # 生成保护行
     generate_protected_rows(ws, style_data, new_protected_start, new_data_end)
     
-    # 重命名工作表
-    if sheet_name in wb.sheetnames:
-        wb.remove(wb[sheet_name])
-    ws.title = sheet_name
+    generate_summary_formula(ws, new_data_start, new_data_end, new_protected_start)
+
+    # ===== 重命名Sheet =====
+    if "原始表_临时" in wb.sheetnames:
+        wb["原始表_临时"].title = sheet_name
     
-    wb.save(output_path)
+    # ===== 保存（保留所有已有Sheet） =====
+    wb.save(str(output_path))
     print(f"\n✅ 模板生成完成!")
     print(f"📁 输出文件: {output_path}")
     print(f"📄 工作表名称: {sheet_name}")
     print(f"📊 数据行数: {data_rows}")
+    print(f"📋 当前文件中的所有Sheet: {wb.sheetnames}")
     
     return str(output_path)
+
+def generate_summary_formula(ws, data_start_row: int, data_end_row: int, summary_row: int):
+    """
+    生成合计行公式
+    """
+    # ===== 核心余额公式 (R列) =====
+    ws.cell(row=summary_row, column=18, value=f"=R4+SUM(O{data_end_row + 1}:Q{data_end_row + 1})-SUM(K{data_end_row + 1}:N{data_end_row + 1})-J{data_end_row + 1}")

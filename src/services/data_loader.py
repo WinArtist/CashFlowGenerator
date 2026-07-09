@@ -4,7 +4,7 @@
 import pandas as pd
 from decimal import Decimal
 from datetime import datetime
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 import re
 
@@ -60,10 +60,12 @@ class DataLoader:
             
             for sheet_name in sheet_names:
                 if self._match_sheet_pattern(sheet_name):
-                    transactions = self._load_from_sheet(file_path, sheet_name)
+                    transactions, opening_balance = self._load_from_sheet(file_path, sheet_name)
                     all_transactions.extend(transactions)
                     if transactions:
                         print(f"  从工作表 [{sheet_name}] 加载了 {len(transactions)} 笔交易")
+                        if opening_balance is not None:
+                            print(f"  期初余额: {opening_balance:.2f}")
         except Exception as e:
             print(f"读取文件失败: {e}")
         
@@ -83,69 +85,73 @@ class DataLoader:
         
         return False
     
-    def _load_from_sheet(self, file_path: str, sheet_name: str) -> List:
+    def _load_from_sheet(self, file_path: str, sheet_name: str) -> Tuple[List, Optional[Decimal]]:
+        """加载工作表数据，同时返回期初余额"""
         try:
-            # 使用 pandas 一次性读取
             df = pd.read_excel(file_path, sheet_name=sheet_name, header=None, dtype=str)
-            return self._parse_dataframe_optimized(df, sheet_name)
+            transactions, opening_balance = self._parse_dataframe_optimized(df, sheet_name)
+            return transactions, opening_balance
         except Exception as e:
             print(f"读取工作表 [{sheet_name}] 失败: {e}")
-            return []
+            return [], None
     
-    def _parse_dataframe_optimized(self, df: pd.DataFrame, sheet_name: str) -> List:
-        """优化的DataFrame解析"""
+    def _parse_dataframe_optimized(self, df: pd.DataFrame, sheet_name: str) -> Tuple[List, Optional[Decimal]]:
+        """优化的DataFrame解析，同时提取期初余额"""
         header_row = self._find_header_row(df)
         if header_row < 0:
-            return []
-        
+            return [], None
+
         col_index = self._find_column_indices(df, header_row)
         if not col_index or 'voucher' not in col_index:
-            return []
-        
+            return [], None
+
         voucher_idx = col_index.get('voucher')
         date_idx = col_index.get('date')
         debit_idx = col_index.get('debit')
         credit_idx = col_index.get('credit')
         desc_idx = col_index.get('desc')
         contra_idx = col_index.get('contra')
-        
+        balance_idx = col_index.get('balance')
+
         if voucher_idx is None or date_idx is None or debit_idx is None or credit_idx is None:
-            return []
-        
-        # 获取数据区域（跳过表头）
+            return [], None
+
+        # ===== 提取期初余额（第6行I列） =====
+        opening_balance = self._extract_opening_balance(df)
+
         data_df = df.iloc[header_row + 1:].copy()
         skip_vouchers = self.data_config.skip_vouchers
-        
+
         transactions = []
-        
+
         for idx, row in data_df.iterrows():
             voucher = row.iloc[voucher_idx]
             if pd.isna(voucher):
                 continue
             voucher = str(voucher).strip()
-            
+
             if not voucher or voucher in skip_vouchers:
                 continue
-            
+
             # 获取金额
             debit_val = row.iloc[debit_idx] if pd.notna(row.iloc[debit_idx]) else 0
             credit_val = row.iloc[credit_idx] if pd.notna(row.iloc[credit_idx]) else 0
-            
+
             try:
                 debit = Decimal(str(debit_val)) if debit_val else Decimal(0)
                 credit = Decimal(str(credit_val)) if credit_val else Decimal(0)
             except:
                 debit = Decimal(0)
                 credit = Decimal(0)
-            
+
             if debit == 0 and credit == 0:
                 continue
-            
+
             # 日期
             date_val = row.iloc[date_idx]
             if pd.isna(date_val):
                 continue
-            
+
             try:
                 if isinstance(date_val, datetime):
                     date = date_val
@@ -153,13 +159,23 @@ class DataLoader:
                     date = pd.to_datetime(date_val)
             except:
                 continue
-            
+
             if date is None:
                 continue
-            
+
             description = str(row.iloc[desc_idx]) if desc_idx is not None and pd.notna(row.iloc[desc_idx]) else ''
             contra_subject = str(row.iloc[contra_idx]) if contra_idx is not None and pd.notna(row.iloc[contra_idx]) else ''
-            
+
+            # ===== 读取余额 =====
+            balance = None
+            if balance_idx is not None and balance_idx < len(row):
+                balance_val = row.iloc[balance_idx]
+                if pd.notna(balance_val):
+                    try:
+                        balance = Decimal(str(balance_val))
+                    except:
+                        pass
+
             transaction = EnhancedTransaction(
                 date=date,
                 voucher=voucher,
@@ -168,15 +184,62 @@ class DataLoader:
                 credit=credit,
                 contra_subject=contra_subject,
                 sheet_name=sheet_name,
-                row_index=idx
+                row_index=idx,
+                balance=balance
             )
-            
+
             if self.quarter_mapper:
                 self._apply_quarter_mapping(transaction)
-            
+
             transactions.append(transaction)
-        
-        return transactions
+
+        return transactions, opening_balance
+    
+    def _extract_opening_balance(self, df: pd.DataFrame) -> Optional[Decimal]:
+        """
+        从明细账中提取期初余额
+        位置：第6行 I列（索引5行，索引8列）
+        """
+        try:
+            # 第6行是索引5，I列是索引8
+            if len(df) > 5 and len(df.iloc[5]) > 8:
+                val = df.iloc[5, 8]
+                if pd.notna(val):
+                    # 尝试转换为Decimal
+                    try:
+                        # 去除可能的逗号、空格等
+                        clean_val = str(val).replace(',', '').replace(' ', '').strip()
+                        result = Decimal(clean_val)
+                        print(f"  📊 期初余额（第6行I列）: {result:.2f}")
+                        return result
+                    except:
+                        pass
+            
+            # 备用方法：查找"期初余额"文本
+            for row_idx in range(min(10, len(df))):
+                row = df.iloc[row_idx]
+                for col_idx in range(min(10, len(row))):
+                    cell_val = str(row.iloc[col_idx]) if pd.notna(row.iloc[col_idx]) else ''
+                    if '期初余额' in cell_val:
+                        # 找到期初余额文本，读取同一行I列
+                        if len(row) > 8:
+                            balance_val = row.iloc[8]
+                            if pd.notna(balance_val):
+                                try:
+                                    clean_val = str(balance_val).replace(',', '').replace(' ', '').strip()
+                                    result = Decimal(clean_val)
+                                    print(f"  📊 期初余额（查找'期初余额'）: {result:.2f}")
+                                    return result
+                                except:
+                                    pass
+                        break
+            
+            print("  ⚠️ 未找到期初余额")
+            return None
+            
+        except Exception as e:
+            print(f"  ❌ 提取期初余额失败: {e}")
+            return None
     
     def _find_header_row(self, df: pd.DataFrame) -> int:
         for idx in range(min(len(df), 20)):
@@ -213,6 +276,16 @@ class DataLoader:
                     col_index['direction'] = i
                 elif '余额' in val_str:
                     col_index['balance'] = i
+        
+        # 如果没找到余额列，默认使用I列（索引8）
+        if 'balance' not in col_index and len(header) > 8:
+            val_str = str(header.iloc[8]) if pd.notna(header.iloc[8]) else ''
+            if '余额' in val_str:
+                col_index['balance'] = 8
+            else:
+                # 强制使用I列作为余额列
+                col_index['balance'] = 8
+                print(f"  ℹ️ 未找到'余额'列，默认使用I列（索引8）作为余额列")
         
         return col_index
     

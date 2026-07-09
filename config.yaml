@@ -1,24 +1,63 @@
 app:
-  period_value: 5月
+  period_value: ''
   decimal_places: 2
   validation_threshold: 0.01
 company:
-  banks:
-  - name: P银行
+  banks: []
 file:
-  detail_path: C:/Users/chqte/Desktop/明细账_上海微誉信息技术有限公司_2026年第3期.xlsx
-  cashflow_file: C:/Users/chqte/Music/现金流表_20260620_184251.xlsx
-income_rules: []
+  single_files:
+  - C:\Users\chqte\Desktop\上海银行_1月.xlsx
+  - C:\Users\chqte\Desktop\上海银行_2月.xlsx
+  - C:\Users\chqte\Desktop\上海银行_3月.xlsx
+  - C:\Users\chqte\Desktop\上海银行_4月.xlsx
+  - C:\Users\chqte\Desktop\上海银行_5月.xlsx
+  - C:\Users\chqte\Desktop\上海银行_6月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_1月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_2月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_3月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_4月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_5月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_6月.xlsx
+  summary_files:
+  - C:\Users\chqte\Desktop\上海银行_1月_6月.xlsx
+  - C:\Users\chqte\Desktop\招商银行_1月_6月.xlsx
+  single_cashflow_file: C:/Users/chqte/Music
+  summary_cashflow_file: C:/Users/chqte/Music/现金流表_20260709_162703.xlsx
+income_rules:
+- category: 产品收入
+  contra_keywords:
+  - 产品收入
+  - 商品销售
+  - 电脑及配件
+  - 销售收入
+  summary_keywords: []
+  enabled: true
+- category: 服务收入
+  contra_keywords:
+  - 服务收入
+  - 技术服务
+  - 咨询
+  - 服务费收入
+  summary_keywords: []
+  enabled: true
+- category: 其他收入
+  contra_keywords:
+  - 其他收入
+  - 零星收入
+  - 收客户款
+  summary_keywords: []
+  enabled: true
 expense_rules:
-- category: 商品采购
+- category: 主营业务支出_商品采购
   contra_keywords:
   - 付供应商款
   - 采购款
   - 货款
   - 京东采购款
+  - 采购
   summary_keywords: []
   enabled: true
-- category: 运费
+- category: 主营业务支出_运费
   contra_keywords:
   - 运费
   - 货拉拉
@@ -27,31 +66,200 @@ expense_rules:
   - 物流
   - 快递
   - 顺丰
+  - 国际快递
   summary_keywords: []
   enabled: true
-- category: 财务_手续费
+- category: 主营业务支出_服务费
   contra_keywords:
-  - 银行手续费
-  - 手续费
+  - 服务费
+  - 检测费
+  - 报告费
+  - 智谱大模型
+  - 大模型
   summary_keywords: []
   enabled: true
-- category: 管理_通讯费
+- category: 主营业务支出_返点佣金
   contra_keywords:
-  - 话费充值
-  - 手机话费
-  - 通讯费
+  - 返点
+  - 佣金
+  - 经销返点
   summary_keywords: []
   enabled: true
-- category: 管理_办公费
+- category: 研发费用_人工成本
+  contra_keywords:
+  - 研发工资
+  - 研发薪资
+  - 研发奖金
+  - 技术人员工资
+  - 工资
+  summary_keywords: []
+  enabled: true
+- category: 研发费用_材料设备
+  contra_keywords:
+  - 研发材料
+  - 研发设备
+  - 元器件
+  - 实验材料
+  summary_keywords: []
+  enabled: true
+- category: 研发费用_服务费
+  contra_keywords:
+  - 研发服务
+  - 技术开发
+  - 研发外包服务
+  summary_keywords: []
+  enabled: true
+- category: 研发费用_委外
+  contra_keywords:
+  - 委外
+  - 外包
+  - 外协
+  - 委托开发
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_飞机动车等
+  contra_keywords:
+  - 飞机
+  - 动车
+  - 高铁
+  - 火车
+  - 机票
+  - 车票
+  - 销售差旅
+  - 车旅费
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_住宿费
+  contra_keywords:
+  - 住宿
+  - 酒店
+  - 宾馆
+  - 销售住宿
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_车辆费
+  contra_keywords:
+  - 车辆费
+  - 油费
+  - 停车费
+  - 过路费
+  - 销售车辆
+  - 保养费
+  - 宝马保养
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_市内交通
+  contra_keywords:
+  - 打车
+  - 出租车
+  - 滴滴
+  - 地铁
+  - 公交
+  - 市内交通
+  - 销售市内交通
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_招待公关
+  contra_keywords:
+  - 招待费
+  - 餐费
+  - 客户招待
+  - 公关
+  - 销售招待
+  - 餐饮费
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_服务费
+  contra_keywords:
+  - 销售服务
+  - 市场服务
+  - 营销服务
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_经销返点
+  contra_keywords:
+  - 经销返点
+  - 销售返点
+  - 经销商返利
+  summary_keywords: []
+  enabled: true
+- category: 销售费用_其他
+  contra_keywords:
+  - 销售其他
+  - 市场其他
+  - 营销其他
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_办公费
   contra_keywords:
   - 饮用水
   - 办公用品
   - 文具
   - 打印
   - 耗材
+  - 办公费
+  - 办公耗材
+  - 网站年费
+  - 水票
+  - 公司自用
+  - 淘宝采购
   summary_keywords: []
   enabled: true
-- category: 管理_员工福利
+- category: 管理费用_办公租金物业费水电费
+  contra_keywords:
+  - 房租
+  - 水电费
+  - 租金
+  - 物业管理
+  - 物业费
+  - 电费
+  - 水费
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_市内交通
+  contra_keywords:
+  - 管理市内交通
+  - 管理打车
+  - 管理地铁
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_招待公关
+  contra_keywords:
+  - 管理招待
+  - 管理餐费
+  - 管理公关
+  - 生日费用
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_飞机动车等
+  contra_keywords:
+  - 管理出差
+  - 管理差旅
+  - 管理飞机
+  - 管理动车
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_人员薪资
+  contra_keywords:
+  - 管理工资
+  - 管理人员薪资
+  - 行政工资
+  - 后勤工资
+  - 发放工资
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_社保公积金
+  contra_keywords:
+  - 缴公积金
+  - 缴社保
+  - 社保
+  - 公积金
+  - 社会保险
+  - 住房公积金
+  - 缴
+  summary_keywords: []
+  enabled: true
+- category: 管理费用_员工福利
   contra_keywords:
   - 福利费
   - 聚餐
@@ -59,130 +267,163 @@ expense_rules:
   - 点心
   - 团建
   - 下午茶
+  - 员工福利
+  - 职工福利
+  - 体检费
   summary_keywords: []
   enabled: true
-- category: 管理_租金物业
+- category: 管理费用_其他
   contra_keywords:
-  - 房租
-  - 水电费
-  - 租金
-  - 物业管理
+  - 管理报销
+  - 行政报销
+  - 报销
+  - 奖杯
+  - 陈耀报销
+  - 徐芳报销
+  - 朱晓福报销
   summary_keywords: []
   enabled: true
-- category: 研发_人工成本
+- category: 财务费用_手续费
   contra_keywords:
-  - 发放工资
-  - 职工工资
-  - 工资
-  - 薪资
-  - 奖金
+  - 银行手续费
+  - 手续费
+  - 转账手续费
+  - 户名不符
   summary_keywords: []
   enabled: true
-- category: 管理_社保公积金
+- category: 财务费用_结息
   contra_keywords:
-  - 缴公积金
-  - 缴社保
-  - 社保
-  - 公积金
+  - 结息
+  - 利息收入
+  - 存款利息
+  - 银行结息
   summary_keywords: []
   enabled: true
-- category: 税金_个税
+- category: 财务费用_贷款利息
   contra_keywords:
-  - 个人所得税
-  - 个税
+  - 贷款利息
+  - 借款利息
+  - 银行利息
+  - 还贷款
   summary_keywords: []
   enabled: true
-- category: 税金_所得税
+- category: 应缴税金_增值税及附加
+  contra_keywords:
+  - 增值税
+  - 进项税
+  - 销项税
+  - 附加税
+  - 城建税
+  - 教育费附加
+  summary_keywords: []
+  enabled: true
+- category: 应缴税金_所得税
   contra_keywords:
   - 企业所得税
   - 所得税
   summary_keywords: []
   enabled: true
-- category: 税金_印花税
+- category: 应缴税金_印花税
   contra_keywords:
   - 印花税
   summary_keywords: []
   enabled: true
-- category: 税金_增值税
+- category: 应缴税金_工资个税
   contra_keywords:
-  - 增值税
-  - 进项税
-  - 销项税
+  - 个人所得税
+  - 个税
+  - 工资个税
+  - 代扣个税
+  - 缴个人所得税
   summary_keywords: []
   enabled: true
-- category: 销售_交通费
+- category: 应缴税金_劳务个税
   contra_keywords:
-  - 车旅费
-  - 差旅费
-  - 交通费
-  - 报销款
+  - 劳务个税
+  - 劳务报酬个税
+  - 劳务费个税
   summary_keywords: []
   enabled: true
-- category: 销售_招待费
+- category: 有形资产_办公设备
   contra_keywords:
-  - 招待费
-  - 餐费
-  - 客户招待
+  - 电脑
+  - 打印机
+  - 办公设备
+  - 复印机
+  - 服务器
+  - 显示器
+  - 音箱
   summary_keywords: []
   enabled: true
-- category: 管理_其他
+- category: 有形资产_办公家具包含车
   contra_keywords:
-  - 报销
+  - 家具
+  - 桌椅
+  - 办公家具
+  - 车辆
+  - 汽车
+  - 办公车
   summary_keywords: []
   enabled: true
-contra_filter:
-  include_keywords: []
-  exclude_keywords:
-  - 报销
-  - 招待费
-  - 福利费
-  - 聚餐
-  - 通讯费
-  - 话费
-  - 工资
-  - 奖金
-  - 社保
+- category: 营业外支出_违约金
+  contra_keywords:
+  - 违约金
+  - 合同违约金
+  summary_keywords: []
+  enabled: true
+- category: 营业外支出_罚款
+  contra_keywords:
+  - 罚款
+  - 行政罚款
+  - 税务罚款
+  summary_keywords: []
+  enabled: true
+allow_prefixes:
+- '1122'
+- '1123'
+- '2202'
+- '2203'
 column_mapping:
   产品收入: 15
   服务收入: 16
   其他收入: 17
-  商品采购: 22
-  运费: 23
-  服务费: 24
-  返点佣金: 25
-  研发_人工成本: 26
-  研发_材料设备: 27
-  研发_服务费: 28
-  研发_委外: 29
-  销售_交通费: 30
-  销售_住宿费: 31
-  销售_车辆费: 32
-  销售_市内交通: 33
-  销售_招待费: 34
-  销售_服务费: 35
-  销售_经销返点: 36
-  销售_其他: 37
-  管理_办公费: 38
-  管理_租金物业: 39
-  管理_市内交通: 40
-  管理_招待费: 41
-  管理_差旅费: 42
-  管理_人员薪资: 43
-  管理_社保公积金: 44
-  管理_员工福利: 45
-  管理_其他: 46
-  财务_手续费: 47
-  财务_结息: 48
-  财务_贷款利息: 49
-  税金_增值税: 50
-  税金_所得税: 51
-  税金_印花税: 52
-  税金_个税: 53
-  固资_办公设备: 54
-  固资_办公家具: 55
-  营业外支出: 56
-  罚款: 57
-  违约金: 58
+  主营业务支出_商品采购: 22
+  主营业务支出_运费: 23
+  主营业务支出_服务费: 24
+  主营业务支出_返点佣金: 25
+  研发费用_人工成本: 26
+  研发费用_材料设备: 27
+  研发费用_服务费: 28
+  研发费用_委外: 29
+  销售费用_飞机动车等: 30
+  销售费用_住宿费: 31
+  销售费用_车辆费: 32
+  销售费用_市内交通: 33
+  销售费用_招待公关: 34
+  销售费用_服务费: 35
+  销售费用_经销返点: 36
+  销售费用_其他: 37
+  管理费用_办公费: 38
+  管理费用_办公租金物业费水电费: 39
+  管理费用_市内交通: 40
+  管理费用_招待公关: 41
+  管理费用_飞机动车等: 42
+  管理费用_人员薪资: 43
+  管理费用_社保公积金: 44
+  管理费用_员工福利: 45
+  管理费用_其他: 46
+  财务费用_手续费: 47
+  财务费用_结息: 48
+  财务费用_贷款利息: 49
+  应缴税金_增值税及附加: 50
+  应缴税金_所得税: 51
+  应缴税金_印花税: 52
+  应缴税金_工资个税: 53
+  应缴税金_劳务个税: 54
+  有形资产_办公设备: 55
+  有形资产_办公家具包含车: 56
+  营业外支出_违约金: 57
+  营业外支出_罚款: 58
 data:
   skip_vouchers:
   - 期初余额
