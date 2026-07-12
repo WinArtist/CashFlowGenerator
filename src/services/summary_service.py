@@ -1,142 +1,47 @@
 # src/services/summary_service.py
-"""汇总表服务 - 将多个明细账文件汇总到汇总表"""
+"""汇总表服务 - 用公式引用已有Sheet的合计行数据"""
 
 from decimal import Decimal
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
-from datetime import datetime
 import re
 
-import pandas as pd
 from openpyxl import load_workbook
-from openpyxl.utils.cell import get_column_letter
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config
-from models.transaction import ClassifiedTransaction
-from services.data_loader import DataLoader
-from services.aggregator import DataAggregator
 
 
 class SummaryService:
-    """汇总表服务 - 多文件汇总到汇总表"""
-    
-    # 月份名称列表
-    MONTH_NAMES = ['1月', '2月', '3月', '4月', '5月', '6月', 
-                   '7月', '8月', '9月', '10月', '11月', '12月']
+    """汇总表服务 - 用公式引用已有Sheet的合计数据"""
     
     def __init__(self, config: Config):
         self.config = config
-        self.data_loader = DataLoader(config)
-        self.aggregator = DataAggregator(config)
         
-        # 汇总表的列映射（包含收入和支出）
-        self.COL_MAPPING = {
-            # 固定列
-            '行号': 1,          # A列
-            '交易时间': 2,       # B列
-            
-            # ===== 收入列 (O/P/Q列) =====
-            '产品收入': 15,
-            '服务收入': 16,
-            '其他收入': 17,
-            
-            # ===== 主营业务支出 (V列开始) =====
-            '主营业务支出_商品采购': 22,
-            '主营业务支出_运费': 23,
-            '主营业务支出_服务费': 24,
-            '主营业务支出_返点佣金': 25,
-            
-            # ===== 研发费用 =====
-            '研发费用_人工成本': 26,
-            '研发费用_材料设备': 27,
-            '研发费用_服务费': 28,
-            '研发费用_委外': 29,
-            
-            # ===== 销售费用 =====
-            '销售费用_飞机动车等': 30,
-            '销售费用_住宿费': 31,
-            '销售费用_车辆费': 32,
-            '销售费用_市内交通': 33,
-            '销售费用_招待公关': 34,
-            '销售费用_服务费': 35,
-            '销售费用_经销返点': 36,
-            '销售费用_其他': 37,
-            
-            # ===== 管理费用 =====
-            '管理费用_办公费': 38,
-            '管理费用_办公租金物业费水电费': 39,
-            '管理费用_市内交通': 40,
-            '管理费用_招待公关': 41,
-            '管理费用_飞机动车等': 42,
-            '管理费用_人员薪资': 43,
-            '管理费用_社保公积金': 44,
-            '管理费用_员工福利': 45,
-            '管理费用_其他': 46,
-            
-            # ===== 财务费用 =====
-            '财务费用_手续费': 47,
-            '财务费用_结息': 48,
-            '财务费用_贷款利息': 49,
-            
-            # ===== 应缴税金 =====
-            '应缴税金_增值税及附加': 50,
-            '应缴税金_所得税': 51,
-            '应缴税金_印花税': 52,
-            '应缴税金_工资个税': 53,
-            '应缴税金_劳务个税': 54,
-            
-            # ===== 有形资产 =====
-            '有形资产_办公设备': 55,
-            '有形资产_办公家具包含车': 56,
-            
-            # ===== 营业外支出 =====
-            '营业外支出_违约金': 57,
-            '营业外支出_罚款': 58,
-        }
+        # 汇总表需要引用公式的列（C列到BF列，即 3-58）
+        self.FORMULA_COLUMNS = list(range(3, 59))
     
-    def parse_filename(self, filename: str) -> Tuple[Optional[str], List[str]]:
+    def parse_sheet_name(self, sheet_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
-        解析文件名，提取银行名称和所有月份
+        解析Sheet名称，提取银行名称和月份
         
         示例:
-            "上海银行_1月_3月.xlsx" -> ("上海银行", ["1月", "2月", "3月"])
-            "上海银行_1月.xlsx" -> ("上海银行", ["1月"])
+            "上海银行_1月" -> ("上海银行", "1月")
+            "招商银行_12月" -> ("招商银行", "12月")
         """
-        name = Path(filename).stem
-        
-        pattern = r'^(.+?)_(\d+月)(?:_(\d+月))?$'
-        match = re.match(pattern, name)
-        
+        pattern = r'^(.+)_(\d+月)$'
+        match = re.match(pattern, sheet_name)
         if match:
-            bank_name = match.group(1)
-            start_month = match.group(2)
-            end_month = match.group(3)
-            
-            if end_month:
-                start_num = self._month_to_number(start_month)
-                end_num = self._month_to_number(end_month)
-                
-                if start_num is not None and end_num is not None and start_num <= end_num:
-                    month_list = self.MONTH_NAMES[start_num - 1:end_num]
-                    return bank_name, month_list
-                else:
-                    return bank_name, [start_month]
-            else:
-                return bank_name, [start_month]
-        
-        if '_' in name:
-            parts = name.split('_')
-            if re.match(r'\d+月', parts[-1]):
-                return parts[0], [parts[-1]]
-        
-        return name, ["未知"]
+            return match.group(1), match.group(2)
+        return None, None
     
     def _month_to_number(self, month_str: str) -> Optional[int]:
-        """将月份字符串转换为数字 1-12"""
+        """将月份字符串转换为数字"""
         match = re.search(r'(\d+)', month_str)
         if match:
             num = int(match.group(1))
@@ -144,121 +49,72 @@ class SummaryService:
                 return num
         return None
     
-    def get_month_files(self, file_paths: List[Path]) -> List[Dict]:
-        """生成汇总行计划"""
-        plan = []
-        for file_path in file_paths:
-            bank_name, month_list = self.parse_filename(file_path.name)
-            for month in month_list:
-                plan.append({
-                    "bank": bank_name,
-                    "month": month,
-                    "file": file_path
-                })
-        
-        plan.sort(key=lambda x: (x["bank"], self._month_to_number(x["month"]) or 0))
-        return plan
-    
-    def load_and_aggregate_file_for_month(self, file_path: Path, month: str, classification_config) -> Dict[int, Decimal]:
+    def _find_summary_row(self, ws) -> Optional[int]:
         """
-        加载单个文件，只汇总指定月份的数据
+        查找Sheet的合计行（数据行之后的合计行）
+        从最后一行往上找，找到有合计数据的行
+        如果Sheet没有有效数据，返回 None
         """
-        transactions = self.data_loader.load_from_files([str(file_path)])
+        max_row = ws.max_row
         
-        if not transactions:
-            return {}
+        # ===== Sheet至少要有10行以上才可能有数据 =====
+        if max_row < 10:
+            return None
         
-        # 根据月份过滤
-        month_num = self._month_to_number(month)
-        if month_num is not None:
-            filtered_transactions = []
-            for trans in transactions:
-                if hasattr(trans, 'date') and trans.date:
-                    trans_month = trans.date.month
-                    if trans_month == month_num:
-                        filtered_transactions.append(trans)
-            transactions = filtered_transactions
-        
-        if not transactions:
-            return {}
-        
-        # 分类交易
-        classified_transactions = []
-        for trans in transactions:
-            if isinstance(trans, ClassifiedTransaction):
-                classified_transactions.append(trans)
-            else:
-                classified = self._classify_transaction(trans, classification_config)
-                classified_transactions.append(classified)
-        
-        # 聚合数据
-        report_data = self.aggregator.aggregate(classified_transactions)
-        
-        # 构建行数据字典
-        row_data = self._build_row_data(report_data)
-        
-        return row_data
+        # 从最后一行往上找
+        for row in range(max_row, 4, -1):
+            cell_c = ws.cell(row=row, column=3)
+            cell_r = ws.cell(row=row, column=18)
+            if cell_c.value is not None or cell_r.value is not None:
+                # 进一步确认：检查该行是否有数据
+                has_data = False
+                for col in [3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 22, 23]:
+                    val = ws.cell(row=row, column=col).value
+                    if val is not None and str(val).strip() != '':
+                        has_data = True
+                        break
+                if has_data:
+                    return row
+        return None
     
-    def _classify_transaction(self, trans, classification_config) -> ClassifiedTransaction:
-        """分类单笔交易 - 收入统一为"其他收入" """
-        income_category = None
-        expense_category = None
-        
-        contra = trans.contra_subject if hasattr(trans, 'contra_subject') else ""
-        desc = trans.description if hasattr(trans, 'description') else ""
-        
-        if trans.is_income:
-            # ===== 所有收入统一归入"其他收入" =====
-            income_category = "其他收入"
-        else:
-            expense_category = classification_config.get_category_by_contra(contra, desc, is_income=False)
-            if not expense_category:
-                expense_category = "管理费用_其他"
-        
-        return ClassifiedTransaction(
-            date=trans.date,
-            voucher=trans.voucher,
-            description=desc,
-            debit=trans.debit,
-            credit=trans.credit,
-            contra_subject=contra,
-            amount=trans.amount,
-            is_income=trans.is_income,
-            income_type=trans.income_type if hasattr(trans, 'income_type') else None,
-            sheet_name=trans.sheet_name if hasattr(trans, 'sheet_name') else "",
-            row_index=trans.row_index if hasattr(trans, 'row_index') else -1,
-            quarter=trans.quarter if hasattr(trans, 'quarter') else None,
-            quarter_confidence=trans.quarter_confidence if hasattr(trans, 'quarter_confidence') else 0.0,
-            quarter_strategy=trans.quarter_strategy if hasattr(trans, 'quarter_strategy') else "",
-            quarter_matched_rule=trans.quarter_matched_rule if hasattr(trans, 'quarter_matched_rule') else None,
-            income_category=income_category,
-            expense_category=expense_category,
-            classification_confidence=0.8
-        )
+    def generate_formula(self, sheet_name: str, summary_row: int, col: int) -> str:
+        """生成引用公式"""
+        col_letter = get_column_letter(col)
+        if "'" in sheet_name:
+            sheet_name = sheet_name.replace("'", "''")
+        return f"='{sheet_name}'!{col_letter}{summary_row}"
     
-    def _build_row_data(self, report_data) -> Dict[int, Decimal]:
-        """构建行数据字典 {列索引: 金额}"""
-        row_data = {}
+    def get_sheets_from_workbook(self, wb) -> List[Dict]:
+        """从工作簿中获取所有符合格式的Sheet"""
+        sheets = []
+        for sheet_name in wb.sheetnames:
+            bank, month = self.parse_sheet_name(sheet_name)
+            if bank and month:
+                ws = wb[sheet_name]
+                summary_row = self._find_summary_row(ws)
+                if summary_row is not None:
+                    sheets.append({
+                        "bank": bank,
+                        "month": month,
+                        "sheet": sheet_name,
+                        "summary_row": summary_row
+                    })
+                else:
+                    print(f"  ⚠️ 跳过 {sheet_name} (未找到合计行)")
         
-        # ===== 收入 - 统一归入"其他收入" =====
-        # 所有收入都放入"其他收入"列（第17列）
-        total_income = report_data.total_income
-        if total_income > 0:
-            row_data[17] = total_income
-        
-        # ===== 支出 - 按分类汇总 =====
-        for category, amount in report_data.expense.items():
-            if amount > 0:
-                col = self.COL_MAPPING.get(category)
-                if col:
-                    row_data[col] = row_data.get(col, Decimal(0)) + amount
-        
-        return row_data
+        sheets.sort(key=lambda x: (x["bank"], self._month_to_number(x["month"]) or 0))
+        return sheets
+    
+    def _is_merged_cell(self, ws, row: int, col: int) -> bool:
+        """检查单元格是否为合并单元格的一部分"""
+        for merged_range in ws.merged_cells.ranges:
+            if row >= merged_range.min_row and row <= merged_range.max_row and \
+               col >= merged_range.min_col and col <= merged_range.max_col:
+                return True
+        return False
     
     def fill_summary_sheet(self, template_path: str, file_paths: List[Path], classification_config) -> Optional[str]:
-        """
-        填充汇总表 - 从第4行开始
-        """
+        """填充汇总表 - 用公式引用已有Sheet的合计行"""
         from openpyxl import load_workbook
         
         if not template_path:
@@ -268,13 +124,19 @@ class SummaryService:
         if not template_path.exists():
             raise FileNotFoundError(f"模板文件不存在: {template_path}")
         
-        # 生成汇总计划
-        plan = self.get_month_files(file_paths)
-        print(f"\n📊 汇总计划: 共 {len(plan)} 行")
-        for item in plan:
-            print(f"  {item['bank']} - {item['month']} <- {item['file'].name}")
-        
         wb = load_workbook(template_path)
+        
+        # 获取所有符合格式的Sheet
+        sheets = self.get_sheets_from_workbook(wb)
+        
+        if not sheets:
+            print("❌ 没有找到符合条件的Sheet（格式: 银行_月份）")
+            print("💡 请先运行'单文件生成'模式创建Sheet")
+            return None
+        
+        print(f"\n📊 找到 {len(sheets)} 个有效Sheet:")
+        for s in sheets:
+            print(f"  {s['sheet']} (合计行: {s['summary_row']})")
         
         # 找到汇总表
         summary_sheet_name = None
@@ -284,54 +146,71 @@ class SummaryService:
                 break
         
         if summary_sheet_name is None:
-            # 如果模板中有"汇总表_临时"或其他名称，尝试创建
-            if '汇总表_临时' in wb.sheetnames:
-                summary_sheet_name = '汇总表_临时'
-            else:
-                raise ValueError("未找到'汇总表'工作表")
+            print("⚠️ 未找到'汇总表'，将创建新Sheet")
+            ws = wb.create_sheet("汇总表")
+            ws.cell(row=1, column=1, value="行号")
+            ws.cell(row=1, column=2, value="交易时间")
+            ws.cell(row=2, column=1, value="银行")
+            ws.cell(row=2, column=2, value="月份")
+            summary_sheet_name = "汇总表"
+        else:
+            ws = wb[summary_sheet_name]
         
-        ws = wb[summary_sheet_name]
+        # ===== 字体：微软雅黑 8号 =====
+        font = Font(name='微软雅黑', size=8)
+        number_format = '#,##0.00;-#,##0.00;-'
         
-        # 从第4行开始填入数据
+        # ===== 清空汇总表数据行（从第4行开始），跳过合并单元格 =====
         start_row = 4
-        
-        # 清空第4行及以下
         max_row = ws.max_row
         if max_row >= start_row:
             for row in range(start_row, max_row + 1):
                 for col in range(1, ws.max_column + 1):
-                    ws.cell(row=row, column=col, value=None)
+                    if not self._is_merged_cell(ws, row, col):
+                        cell = ws.cell(row=row, column=col)
+                        cell.value = None
+                        cell.font = font
         
-        # 为每个汇总项创建一行
-        for idx, item in enumerate(plan):
+        # 为每个Sheet生成一行引用公式
+        for idx, sheet_info in enumerate(sheets):
             current_row = start_row + idx
+            sheet_name = sheet_info["sheet"]
+            summary_row = sheet_info["summary_row"]
             
-            # 行号列（A列）：银行名称
-            ws.cell(row=current_row, column=1, value=item["bank"])
+            # A列：银行名称
+            if not self._is_merged_cell(ws, current_row, 1):
+                cell = ws.cell(row=current_row, column=1, value=sheet_info["bank"])
+                cell.font = font
             
-            # 交易时间列（B列）：月份
-            ws.cell(row=current_row, column=2, value=item["month"])
+            # B列：月份
+            if not self._is_merged_cell(ws, current_row, 2):
+                cell = ws.cell(row=current_row, column=2, value=sheet_info["month"])
+                cell.font = font
             
-            # 加载并汇总该文件对应月份的数据
-            print(f"  📊 处理: {item['bank']} - {item['month']}")
-            row_data = self.load_and_aggregate_file_for_month(
-                item["file"], 
-                item["month"], 
-                classification_config
-            )
+            # C列到BF列（3-58）：全部生成引用公式
+            for col in self.FORMULA_COLUMNS:
+                if not self._is_merged_cell(ws, current_row, col):
+                    formula = self.generate_formula(sheet_name, summary_row, col)
+                    cell = ws.cell(row=current_row, column=col, value=formula)
+                    cell.font = font
+                    cell.number_format = number_format
             
-            # 填入数据
-            for col, amount in row_data.items():
-                if amount != 0:
-                    ws.cell(row=current_row, column=col, value=float(amount))
-            
-            # 打印收入汇总（调试用）
-            total_income = row_data.get(17, Decimal(0))
-            if total_income > 0:
-                print(f"    ✅ {item['bank']} - {item['month']} 收入合计: {total_income:.2f} (已归入其他收入)")
+            print(f"  ✅ 生成汇总行: {sheet_info['bank']} - {sheet_info['month']} (引用 {sheet_name} 第 {summary_row} 行)")
+        
+        # ===== 设置汇总表所有单元格字体和格式（跳过合并单元格） =====
+        for row in range(1, ws.max_row + 1):
+            for col in range(1, ws.max_column + 1):
+                if not self._is_merged_cell(ws, row, col):
+                    cell = ws.cell(row=row, column=col)
+                    if cell.value is not None:
+                        cell.font = font
+                        if col >= 3:
+                            cell.number_format = number_format
         
         # 保存
         wb.save(str(template_path))
         print(f"✅ 汇总表已更新: {template_path}")
+        print(f"📝 已应用字体: 微软雅黑 8号")
+        print(f"📝 已应用数字格式: 0 显示为 '-'")
         
         return str(template_path)

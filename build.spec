@@ -1,8 +1,8 @@
-# build.spec
 # -*- mode: python ; coding: utf-8 -*-
 
 block_cipher = None
 
+# ===== 隐藏导入 =====
 hiddenimports = [
     'openpyxl',
     'openpyxl.cell',
@@ -10,15 +10,44 @@ hiddenimports = [
     'openpyxl.workbook',
     'openpyxl.writer',
     'openpyxl.styles',
+    'openpyxl.styles.numbers',
     'openpyxl.utils',
+    'openpyxl.utils.cell',
+    'openpyxl.formula',
+    'openpyxl.comments',
+    'openpyxl.drawing',
+    'openpyxl.chart',
+    'openpyxl.worksheet',
+    'openpyxl.worksheet.cell_range',
+    'openpyxl.packaging',
+    'openpyxl.xml',
+    'openpyxl.xml.functions',
     'pandas',
     'pandas.io',
+    'pandas.io.excel',
     'pandas.core',
+    'pandas.core.frame',
+    'pandas.core.series',
+    'pandas.core.indexes',
+    'pandas.core.dtypes',
+    'pandas.core.algorithms',
+    'pandas.core.arrays',
+    'pandas.core.groupby',
+    'pandas.core.reshape',
+    'pandas.core.sorting',
+    'pandas.core.window',
+    'pandas.io.common',
+    'pandas.io.parsers',
+    'pandas.io.parsers.readers',
     'numpy',
     'numpy.core',
+    'numpy.core._methods',
     'numpy.lib',
+    'numpy.lib.format',
     'numpy.random',
+    'numpy.random._common',
     'numpy.linalg',
+    'numpy.linalg.linalg',
     'numpy.fft',
     'numpy.polynomial',
     'numpy.ma',
@@ -26,8 +55,11 @@ hiddenimports = [
     'numpy.rec',
     'numpy.testing',
     'yaml',
+    'yaml.loader',
+    'yaml.dumper',
     'lxml',
     'lxml.etree',
+    'lxml._elementpath',
     'PyQt5',
     'PyQt5.QtCore',
     'PyQt5.QtWidgets',
@@ -37,6 +69,13 @@ hiddenimports = [
     'pathlib',
     'logging',
     'traceback',
+    're',
+    'copy',
+    'shutil',
+    'tempfile',
+    'argparse',
+    'enum',
+    'dataclasses',
     'models',
     'models.transaction',
     'models.report_data',
@@ -48,6 +87,7 @@ hiddenimports = [
     'services.direct_sheet_filler',
     'services.create_blank_template',
     'services.quarter_mapper',
+    'services.summary_service',
     'strategies',
     'strategies.classification_strategy',
     'strategies.default_strategy',
@@ -55,14 +95,21 @@ hiddenimports = [
     'factories.reporter_factory',
 ]
 
+# ===== 资源文件 =====
+datas = [
+    ('templates', 'templates'),  # 模板文件夹
+    ('config.yaml', '.'),        # 配置文件
+]
+
+# ===== 如果有图标文件，添加到这里 =====
+# 图标文件放在项目根目录，名称为 icon.ico
+# 也可以使用绝对路径
+
 a = Analysis(
     ['src/gui_main.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('templates', 'templates'),
-        ('config.yaml', '.'),
-    ],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -74,6 +121,12 @@ a = Analysis(
         'tkinter',
         'test',
         'tests',
+        'unittest',
+        'distutils',
+        'setuptools',
+        'ipython',
+        'jupyter',
+        'notebook',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -83,6 +136,7 @@ a = Analysis(
 
 pyd = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# ===== 可执行文件配置 =====
 exe = EXE(
     pyd,
     a.scripts,
@@ -97,10 +151,11 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
+    console=False,  # True=显示控制台窗口，False=不显示
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='icon.ico',  # ===== 添加图标 =====
 )

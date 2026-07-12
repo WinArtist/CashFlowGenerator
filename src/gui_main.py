@@ -122,16 +122,7 @@ class WorkerThread(QThread):
         
         classification = config_obj.data.classification
         expense_rules = classification.expense_rules
-        income_rules = classification.income_rules
         allow_prefixes = getattr(classification, 'allow_prefixes', ALLOW_PREFIXES)
-        
-        self.log_updated.emit(f'📋 当前加载的收入规则: {len(income_rules)} 条')
-        for rule in income_rules:
-            keywords = []
-            for cr in rule.contra_rules:
-                keywords.extend(cr.keywords)
-            if keywords:
-                self.log_updated.emit(f'  - {rule.category}: {keywords}')
         
         self.log_updated.emit(f'📋 当前加载的支出规则: {len(expense_rules)} 条')
         for rule in expense_rules:
@@ -142,6 +133,7 @@ class WorkerThread(QThread):
                 self.log_updated.emit(f'  - {rule.category}: {keywords}')
         
         self.log_updated.emit(f'✅ 白名单前缀（硬编码）: {allow_prefixes}')
+        self.log_updated.emit(f'💡 所有收入统一归入"其他收入"')
         
         if self.cashflow_file:
             config_obj.file.output_dir = str(self.cashflow_file.parent)
@@ -185,9 +177,8 @@ class WorkerThread(QThread):
                     return
                 
                 if len(transactions) == 0:
-                    self.log_updated.emit(f'⚠️ 跳过: 没有找到交易数据')
-                    failed_files.append((detail_path.name, "没有找到交易数据"))
-                    continue
+                    self.log_updated.emit(f'⚠️ 没有找到交易数据，将创建空Sheet')
+                    # 不跳过，继续执行，让generator创建空Sheet
                 
                 generator.transactions = transactions
                 
@@ -321,13 +312,17 @@ class MainWindow(QMainWindow):
         self.single_cashflow_path = QLineEdit()
         self.single_file_list = QListWidget()
         self.single_file_count_label = QLabel('共 0 个文件')
-        
+    
         # 汇总模式Tab控件
         self.summary_detail_path = QLineEdit()
         self.summary_cashflow_path = QLineEdit()
         self.summary_file_list = QListWidget()
         self.summary_file_count_label = QLabel('共 0 个文件')
-        
+    
+        # ===== 添加 mode_hint =====
+        self.mode_hint = QLabel('💡 选择目录 → 每次创建新文件（含时间戳） | 选择已有文件 → 追加Sheet')
+        self.mode_hint.setStyleSheet('color: #94a3b8; font-size: 13px; padding: 4px 0 0 0;')
+    
         # 公共控件
         self.expense_rules = QTextEdit()
         self.log_text = QTextEdit()
@@ -335,7 +330,7 @@ class MainWindow(QMainWindow):
         self.progress_label = QLabel('就绪')
         self.run_btn = None
         self.stop_btn = None
-        self.tabs = QTabWidget()
+        self.tabs = QTabWidget() 
     
     # ==================== 窗口管理 ====================
     def restore_window(self):
@@ -442,7 +437,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, '验证通过', '✅ 规则格式正确')
             return True
         else:
-            error_msg = "支出规则存在以下语法错误：\n\n"
+            error_msg = "支出规则存在语法错误，请修正后重试：\n\n"
             for err in errors:
                 error_msg += f"  • {err}\n"
             error_msg += "\n💡 请根据提示修正后重新验证"
@@ -514,28 +509,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, '错误', f'预览失败: {e}')
     
     def _log_rules(self):
+        """在日志中展示当前规则"""
         classification = self.config_obj.data.classification
         expense_rules = classification.expense_rules
+        allow_prefixes = getattr(classification, 'allow_prefixes', ALLOW_PREFIXES)
 
         self.append_log('')
         self.append_log('=' * 60)
-    
+        
         # ===== 收入规则 - 固定显示"其他收入" =====
         self.append_log('📋 当前收入规则（固定）:')
         self.append_log('  其他收入: 所有收入统一归入此分类')
-    
-        self.append_log('')
-        self.append_log('📋 当前加载的支出规则:')
-        if expense_rules:
-            for rule in expense_rules:
-                keywords = []
-                for cr in rule.contra_rules:
-                    keywords.extend(cr.keywords)
-                keywords.extend(rule.summary_keywords)
-                if keywords:
-                    self.append_log(f'  {rule.category}: {keywords}')
-        else:
-            self.append_log('  (无支出规则)') 
         
         self.append_log('')
         self.append_log('📋 当前加载的支出规则:')
@@ -552,7 +536,7 @@ class MainWindow(QMainWindow):
 
         self.append_log('')
         self.append_log('✅ 白名单前缀（硬编码）:')
-        self.append_log(f'  {ALLOW_PREFIXES}')
+        self.append_log(f'  {allow_prefixes}')
         self.append_log('💡 只有对方科目以这些前缀开头的交易才会填充客户/供应商列')
         self.append_log('=' * 60)
         self.append_log('')
@@ -948,8 +932,8 @@ class MainWindow(QMainWindow):
         msg = QMessageBox(self)
         msg.setWindowTitle('选择输出位置')
         msg.setText('请选择操作模式：')
-        dir_btn = msg.addButton('📂 选择输出目录', QMessageBox.ActionRole)
-        file_btn = msg.addButton('📄 选择已有文件', QMessageBox.ActionRole)
+        dir_btn = msg.addButton('📂 选择输出目录（创建新文件）', QMessageBox.ActionRole)
+        file_btn = msg.addButton('📄 选择已有文件（追加Sheet）', QMessageBox.ActionRole)
         cancel_btn = msg.addButton('取消', QMessageBox.RejectRole)
         msg.exec_()
         
@@ -967,12 +951,13 @@ class MainWindow(QMainWindow):
             
             path = QFileDialog.getExistingDirectory(
                 self, 
-                '选择输出目录', 
+                '选择输出目录（将创建新文件）', 
                 current
             )
             if path:
                 line_edit.setText(path)
                 line_edit.setStyleSheet('background: white; color: #1e293b;')
+                self.mode_hint.setText('💡 目录模式 → 每次运行创建新文件（含时间戳）')
                 self.append_log(f'📂 输出目录: {path}')
                 self.auto_save()
         
@@ -988,13 +973,14 @@ class MainWindow(QMainWindow):
             
             path, _ = QFileDialog.getOpenFileName(
                 self, 
-                '选择已有文件', 
+                '选择已有文件（追加Sheet）', 
                 current_dir,
                 'Excel文件 (*.xlsx *.xls)'
             )
             if path:
                 line_edit.setText(path)
                 line_edit.setStyleSheet('background: white; color: #1e293b;')
+                self.mode_hint.setText('💡 文件模式 → 在已有文件中追加Sheet')
                 self.append_log(f'📄 选择文件: {Path(path).name}')
                 self.auto_save()
     
@@ -1067,7 +1053,7 @@ class MainWindow(QMainWindow):
         
         f2.addRow('现金流表：', cashflow_container)
         
-        mode_hint = QLabel('💡 每个明细账文件生成一个独立的Sheet')
+        mode_hint = QLabel('💡 选择目录 → 每次创建新文件（含时间戳） | 选择已有文件 → 追加Sheet')
         mode_hint.setStyleSheet('color: #94a3b8; font-size: 13px; padding: 4px 0 0 0;')
         f2.addRow('', mode_hint)
         
@@ -1171,7 +1157,7 @@ class MainWindow(QMainWindow):
         
         f2.addRow('汇总表：', cashflow_container)
         
-        mode_hint = QLabel('💡 所有明细账文件汇总到"汇总表"Sheet，每个银行每月一行')
+        mode_hint = QLabel('💡 选择目录 → 每次创建新文件（含时间戳） | 选择已有文件 → 追加Sheet')
         mode_hint.setStyleSheet('color: #4f46e5; font-size: 13px; padding: 4px 0 0 0;')
         f2.addRow('', mode_hint)
         
@@ -1518,17 +1504,17 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, '提示', '请在"单文件生成"或"汇总模式"Tab中操作')
     
-    # gui_main.py - 修改 _run_single_mode 和 _run_summary_mode
-
     def _run_single_mode(self):
-        """运行单文件生成模式 - 追加Sheet到已有文件"""
-        if not self.single_cashflow_path.text().strip():
+        """运行单文件生成模式 - 目录模式始终创建新文件"""
+        cashflow_input = self.single_cashflow_path.text().strip()
+        
+        if not cashflow_input:
             QMessageBox.warning(self, '提示', '请选择输出目录或现金流表文件')
             return
         if not self.single_files:
             QMessageBox.warning(self, '提示', '请选择明细账文件（支持Ctrl多选）')
             return
-    
+        
         is_valid, errors = self._check_rules()
         if not is_valid:
             error_msg = "支出规则存在语法错误，请修正后重试：\n\n"
@@ -1537,45 +1523,37 @@ class MainWindow(QMainWindow):
             error_msg += "\n💡 提示：点击「验证规则」按钮可检查语法错误"
             QMessageBox.warning(self, '规则错误', error_msg)
             return
-    
+        
         self._save_config()
-    
-        cashflow_input = self.single_cashflow_path.text().strip()
+        
         cashflow_path = Path(cashflow_input)
-    
-        # ===== 确定输出文件 =====
+        
         if cashflow_path.suffix in ['.xlsx', '.xls']:
-            # 用户选择了已有文件
+            # ===== 用户选择了已有文件 =====
             cashflow_file = cashflow_path
             self.append_log(f'📄 使用已有现金流表: {cashflow_file.name}')
+            if len(self.single_files) > 1:
+                self.append_log(f'📌 将添加 {len(self.single_files)} 个Sheet到现有文件')
         else:
-            # 用户选择了目录，创建新文件
+            # ===== 用户选择了目录，始终创建新文件（带时间戳） =====
             dir_path = cashflow_path
-            # 检查目录下是否已有现金流表文件
-            existing_files = list(dir_path.glob("现金流表_*.xlsx"))
-            if existing_files:
-                # 使用最新的已有文件
-                cashflow_file = sorted(existing_files, key=lambda x: x.stat().st_mtime)[-1]
-                self.append_log(f'📄 使用已有现金流表: {cashflow_file.name}')
-            else:
-                # 创建新文件
-                first_name = self.single_files[0].stem
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"现金流表_{timestamp}.xlsx"
-                cashflow_file = dir_path / filename
-                self.append_log(f'📂 目录模式，创建新文件: {filename}')
-    
+            first_name = self.single_files[0].stem
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"现金流表_{timestamp}.xlsx"
+            cashflow_file = dir_path / filename
+            self.append_log(f'📂 目录模式，创建新文件: {filename}')
+        
         cashflow_file.parent.mkdir(parents=True, exist_ok=True)
-    
+        
         self.append_log(f'📄 输出文件: {cashflow_file}')
         self.append_log(f'📁 共 {len(self.single_files)} 个明细账文件待处理')
-        self.append_log(f'📌 模式: 追加Sheet到已有文件')
-    
+        self.append_log(f'📌 模式: 追加Sheet到已有文件' if cashflow_path.suffix in ['.xlsx', '.xls'] else '📌 模式: 创建新文件')
+        
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.progress_bar.setValue(0)
         self.progress_label.setText('准备中...')
-    
+        
         self.single_worker = WorkerThread(
             self.single_files,
             cashflow_file,
@@ -1586,11 +1564,12 @@ class MainWindow(QMainWindow):
         self.single_worker.file_progress.connect(self._on_file_progress)
         self.single_worker.finished.connect(lambda success, result: self._on_single_finished(success, result))
         self.single_worker.start()
-
-
+    
     def _run_summary_mode(self):
-        """运行汇总模式 - 追加/更新汇总表Sheet"""
-        if not self.summary_cashflow_path.text().strip():
+        """运行汇总模式 - 目录模式始终创建新文件"""
+        cashflow_input = self.summary_cashflow_path.text().strip()
+    
+        if not cashflow_input:
             QMessageBox.warning(self, '提示', '请选择输出目录或汇总表文件')
             return
         if not self.summary_files:
@@ -1608,36 +1587,29 @@ class MainWindow(QMainWindow):
     
         self._save_config()
     
-        cashflow_input = self.summary_cashflow_path.text().strip()
         cashflow_path = Path(cashflow_input)
     
-        # ===== 确定输出文件 =====
         if cashflow_path.suffix in ['.xlsx', '.xls']:
-            # 用户选择了已有文件
+            # ===== 用户选择了已有文件 =====
+            if not cashflow_path.exists():
+                QMessageBox.warning(self, '提示', f'文件不存在: {cashflow_path.name}')
+                return
             cashflow_file = cashflow_path
             self.append_log(f'📄 使用已有文件: {cashflow_file.name}')
         else:
-            # 用户选择了目录，创建新文件
+            # ===== 用户选择了目录，始终创建新文件（带时间戳） =====
             dir_path = cashflow_path
-            # 检查目录下是否已有现金流表文件
-            existing_files = list(dir_path.glob("现金流表_*.xlsx"))
-            if existing_files:
-                # 使用最新的已有文件
-                cashflow_file = sorted(existing_files, key=lambda x: x.stat().st_mtime)[-1]
-                self.append_log(f'📄 使用已有现金流表: {cashflow_file.name}')
-            else:
-                # 创建新文件
-                first_name = self.summary_files[0].stem
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"现金流表_{timestamp}.xlsx"
-                cashflow_file = dir_path / filename
-                self.append_log(f'📂 目录模式，创建新文件: {filename}')
+            first_name = self.summary_files[0].stem
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"现金流表_{timestamp}.xlsx"
+            cashflow_file = dir_path / filename
+            self.append_log(f'📂 目录模式，创建新文件: {filename}')
     
         cashflow_file.parent.mkdir(parents=True, exist_ok=True)
     
         self.append_log(f'📊 汇总模式: 共 {len(self.summary_files)} 个文件')
         self.append_log(f'📄 输出文件: {cashflow_file}')
-        self.append_log(f'📌 模式: 更新"汇总表"Sheet')
+        self.append_log(f'📌 模式: 创建新文件并生成汇总表')
     
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)

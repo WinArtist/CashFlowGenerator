@@ -317,9 +317,7 @@ def create_template_from_detail(
     output_filename: str,
     sheet_name: str
 ) -> str:
-    """
-    根据明细账数据量生成模板 - 支持追加到已有文件
-    """
+    """根据明细账数据量生成模板 - 即使无数据也生成"""
     detail_path = Path(detail_path)
     template_path = Path(template_path)
     
@@ -335,16 +333,15 @@ def create_template_from_detail(
         print("❌ 必要参数缺失")
         return None
     
+    # ===== 即使没有交易数据，也至少创建1行 =====
     data_rows = count_real_transactions(str(detail_path))
     if data_rows == 0:
-        print("❌ 没有找到有效的交易数据")
-        return None
+        print("⚠️ 没有找到有效的交易数据，将创建空Sheet（1行占位）")
+        data_rows = 1  # 至少1行，让模板有结构
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / output_filename
-    
-    # ===== 判断文件是否存在 =====
     file_exists = output_path.exists()
     
     # ===== 加载模板工作簿 =====

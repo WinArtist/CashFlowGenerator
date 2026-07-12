@@ -4,6 +4,7 @@
 """
 
 from decimal import Decimal
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -422,7 +423,7 @@ class CashFlowReportGenerator:
         print("-" * 80)
     
     def run_full_flow(self, input_file: Path, quarter: str) -> bool:
-        """执行完整流程：检查数据 → 生成模板 → 填入数据"""
+        """执行完整流程：检查数据 → 生成模板 → 填入数据（即使无数据也生成空Sheet）"""
         print("\n" + "=" * 60)
         print("    开始执行完整流程")
         print(f"    输入文件: {input_file.name}")
@@ -449,22 +450,25 @@ class CashFlowReportGenerator:
             print("\n📊 步骤1: 加载数据...")
             all_transactions = self.data_loader.load_from_files([str(input_file)])
             opening_balance = self._extract_opening_balance_from_file(input_file)
-            
+        
             if opening_balance is None:
                 opening_balance = self._find_opening_balance(all_transactions)
-            
+        
             if opening_balance is None:
                 print("  ⚠️ 未找到期初余额，使用 0")
                 opening_balance = Decimal(0)
 
             transactions = all_transactions
         
-            if not self.validate_transactions(transactions):
-                return False
+            # ===== 修改：即使没有交易数据，也继续生成模板 =====
+            if not transactions:
+                print("  ⚠️ 没有找到交易数据，将创建空Sheet")
+                # 不返回False，继续执行
+        
             self.transactions = transactions
             self.print_summary(transactions)
 
-            # 步骤2: 生成模板
+            # 步骤2: 生成模板（即使没有数据也生成）
             print("\n📁 步骤2: 生成模板...")
             template_path = self.generate_template(
                 input_file, 
@@ -478,13 +482,17 @@ class CashFlowReportGenerator:
                 return False
             print(f"✅ 模板已生成: {template_path}")
 
-            # 步骤3: 填入数据
-            print("\n📝 步骤3: 填入数据...")
-            filled_path = self.fill_data(template_path, transactions, quarter, self.sheet_name, opening_balance)
-            if not filled_path:
-                print("❌ 数据填入失败")
-                return False
-            print(f"✅ 数据已填入: {filled_path}")
+            # 步骤3: 如果有交易数据，填入数据；否则只保留空模板
+            if transactions:
+                print("\n📝 步骤3: 填入数据...")
+                filled_path = self.fill_data(template_path, transactions, quarter, self.sheet_name, opening_balance)
+                if not filled_path:
+                    print("❌ 数据填入失败")
+                    return False
+                print(f"✅ 数据已填入: {filled_path}")
+            else:
+                print("  ⚠️ 无交易数据，保留空Sheet")
+                filled_path = template_path
 
             print("\n" + "=" * 60)
             print("✅ 全部完成!")
@@ -500,7 +508,7 @@ class CashFlowReportGenerator:
             import traceback
             print(f"❌ run_full_flow 异常: {e}")
             print(traceback.format_exc())
-            return False
+            return False 
 
     def _extract_opening_balance_from_file(self, file_path: Path) -> Optional[Decimal]:
         """直接从明细账文件提取期初余额（第6行I列）"""
@@ -546,7 +554,7 @@ class CashFlowReportGenerator:
         return None
 
     def run_summary(self, file_paths: List[Path], output_path: Optional[Path] = None) -> bool:
-        """执行汇总功能：将多个明细账文件汇总到汇总表"""
+        """执行汇总功能：先检查Sheet是否存在，再汇总"""
         print("\n" + "=" * 60)
         print("    开始执行汇总")
         print(f"    文件数量: {len(file_paths)}")
@@ -557,10 +565,11 @@ class CashFlowReportGenerator:
             return False
     
         try:
+            # ===== 确定输出路径 =====
             if output_path is None:
                 output_dir = file_paths[0].parent
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = output_dir / f"汇总表_{timestamp}.xlsx"
+                output_path = output_dir / f"现金流表_{timestamp}.xlsx"
             else:
                 output_path = Path(output_path)
                 output_dir = output_path.parent
@@ -572,14 +581,30 @@ class CashFlowReportGenerator:
                 print(f"❌ 模板文件不存在: {template_path}")
                 return False
         
-            # ===== 关键修改：只在文件不存在时复制模板 =====
+            # ===== 先检查目标文件是否已有Sheet =====
+            # 如果文件不存在，或者存在但没有有效Sheet，报错
             if not output_path.exists():
-                shutil.copy2(template_path, output_path)
-                print(f"📄 已创建新文件: {output_path}")
-            else:
-                print(f"📄 使用已有文件: {output_path}")
+                print(f"❌ 文件不存在: {output_path}")
+                print("💡 请先运行'单文件生成'模式创建Sheet")
+                return False
         
-            # ===== 调用汇总服务 =====
+            # ===== 检查文件中是否有符合条件的Sheet =====
+            from openpyxl import load_workbook
+            wb = load_workbook(output_path)
+            has_valid_sheet = False
+            for sheet_name in wb.sheetnames:
+                if re.match(r'^.+_\d+月$', sheet_name):
+                    has_valid_sheet = True
+                    break
+            wb.close()
+        
+            if not has_valid_sheet:
+                print(f"❌ 文件 {output_path.name} 中没有找到符合条件的Sheet（格式: 银行_月份）")
+                print("💡 请先运行'单文件生成'模式创建Sheet")
+                return False
+        
+            # ===== 执行汇总 =====
+            print(f"📄 使用已有文件: {output_path}")
             result = self.summary_service.fill_summary_sheet(
                 str(output_path),
                 file_paths,
@@ -599,7 +624,7 @@ class CashFlowReportGenerator:
             import traceback
             print(f"❌ 汇总异常: {e}")
             print(traceback.format_exc())
-            return False 
+            return False
 
 
 def main():
