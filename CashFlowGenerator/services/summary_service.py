@@ -1,4 +1,4 @@
-# src/services/summary_service.py
+# src/services/summary_service.py - 修复外部链接问题
 """汇总表服务 - 用公式引用已有Sheet的合计行数据"""
 
 from decimal import Decimal
@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import Config
+from CashFlowGenerator.config import Config
 
 
 class SummaryService:
@@ -27,13 +27,7 @@ class SummaryService:
         self.FORMULA_COLUMNS = list(range(3, 59))
     
     def parse_sheet_name(self, sheet_name: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        解析Sheet名称，提取银行名称和月份
-        
-        示例:
-            "上海银行_1月" -> ("上海银行", "1月")
-            "招商银行_12月" -> ("招商银行", "12月")
-        """
+        """解析Sheet名称，提取银行名称和月份"""
         pattern = r'^(.+)_(\d+月)$'
         match = re.match(pattern, sheet_name)
         if match:
@@ -50,23 +44,16 @@ class SummaryService:
         return None
     
     def _find_summary_row(self, ws) -> Optional[int]:
-        """
-        查找Sheet的合计行（数据行之后的合计行）
-        从最后一行往上找，找到有合计数据的行
-        如果Sheet没有有效数据，返回 None
-        """
+        """查找Sheet的合计行"""
         max_row = ws.max_row
         
-        # ===== Sheet至少要有10行以上才可能有数据 =====
         if max_row < 10:
             return None
         
-        # 从最后一行往上找
         for row in range(max_row, 4, -1):
             cell_c = ws.cell(row=row, column=3)
             cell_r = ws.cell(row=row, column=18)
             if cell_c.value is not None or cell_r.value is not None:
-                # 进一步确认：检查该行是否有数据
                 has_data = False
                 for col in [3, 4, 5, 6, 7, 8, 9, 15, 16, 17, 22, 23]:
                     val = ws.cell(row=row, column=col).value
@@ -78,16 +65,24 @@ class SummaryService:
         return None
     
     def generate_formula(self, sheet_name: str, summary_row: int, col: int) -> str:
-        """生成引用公式"""
+        """生成引用公式 - 使用安全格式"""
         col_letter = get_column_letter(col)
+        # 如果sheet名称包含特殊字符，使用引号包裹
         if "'" in sheet_name:
             sheet_name = sheet_name.replace("'", "''")
-        return f"='{sheet_name}'!{col_letter}{summary_row}"
+        # 使用单引号包裹sheet名称（包含特殊字符时）
+        if any(c in sheet_name for c in [' ', '-', '（', '）', '(', ')']):
+            return f"='{sheet_name}'!{col_letter}{summary_row}"
+        else:
+            return f"={sheet_name}!{col_letter}{summary_row}"
     
     def get_sheets_from_workbook(self, wb) -> List[Dict]:
         """从工作簿中获取所有符合格式的Sheet"""
         sheets = []
         for sheet_name in wb.sheetnames:
+            # 排除汇总表本身
+            if '汇总表' in sheet_name:
+                continue
             bank, month = self.parse_sheet_name(sheet_name)
             if bank and month:
                 ws = wb[sheet_name]
@@ -113,6 +108,22 @@ class SummaryService:
                 return True
         return False
     
+    def _clear_external_links(self, wb):
+        """清除外部链接引用，防止Excel打开时提示修复"""
+        try:
+            # 删除外部链接
+            if hasattr(wb, 'external_links'):
+                for link in list(wb.external_links):
+                    wb.external_links.remove(link)
+            
+            # 如果有 externalReferences 属性
+            if hasattr(wb, 'externalReferences'):
+                for ref in list(wb.externalReferences):
+                    wb.externalReferences.remove(ref)
+            
+        except Exception as e:
+            print(f"  ⚠️ 清除外部链接时出错: {e}")
+    
     def fill_summary_sheet(self, template_path: str, file_paths: List[Path], classification_config) -> Optional[str]:
         """填充汇总表 - 用公式引用已有Sheet的合计行"""
         from openpyxl import load_workbook
@@ -126,6 +137,9 @@ class SummaryService:
         
         wb = load_workbook(template_path)
         
+        # 清除外部链接
+        self._clear_external_links(wb)
+        
         # 获取所有符合格式的Sheet
         sheets = self.get_sheets_from_workbook(wb)
         
@@ -138,7 +152,7 @@ class SummaryService:
         for s in sheets:
             print(f"  {s['sheet']} (合计行: {s['summary_row']})")
         
-        # 找到汇总表
+        # 找到或创建汇总表
         summary_sheet_name = None
         for sheet_name in wb.sheetnames:
             if '汇总表' in sheet_name:
@@ -148,6 +162,7 @@ class SummaryService:
         if summary_sheet_name is None:
             print("⚠️ 未找到'汇总表'，将创建新Sheet")
             ws = wb.create_sheet("汇总表")
+            # 设置表头
             ws.cell(row=1, column=1, value="行号")
             ws.cell(row=1, column=2, value="交易时间")
             ws.cell(row=2, column=1, value="银行")
@@ -156,11 +171,11 @@ class SummaryService:
         else:
             ws = wb[summary_sheet_name]
         
-        # ===== 字体：微软雅黑 8号 =====
+        # 字体
         font = Font(name='微软雅黑', size=8)
         number_format = '#,##0.00;-#,##0.00;-'
         
-        # ===== 清空汇总表数据行（从第4行开始），跳过合并单元格 =====
+        # 清空汇总表数据行（从第4行开始）
         start_row = 4
         max_row = ws.max_row
         if max_row >= start_row:
@@ -187,7 +202,7 @@ class SummaryService:
                 cell = ws.cell(row=current_row, column=2, value=sheet_info["month"])
                 cell.font = font
             
-            # C列到BF列（3-58）：全部生成引用公式
+            # C列到BF列（3-58）：生成引用公式
             for col in self.FORMULA_COLUMNS:
                 if not self._is_merged_cell(ws, current_row, col):
                     formula = self.generate_formula(sheet_name, summary_row, col)
@@ -197,7 +212,7 @@ class SummaryService:
             
             print(f"  ✅ 生成汇总行: {sheet_info['bank']} - {sheet_info['month']} (引用 {sheet_name} 第 {summary_row} 行)")
         
-        # ===== 设置汇总表所有单元格字体和格式（跳过合并单元格） =====
+        # 设置所有单元格字体和格式
         for row in range(1, ws.max_row + 1):
             for col in range(1, ws.max_column + 1):
                 if not self._is_merged_cell(ws, row, col):
@@ -206,6 +221,9 @@ class SummaryService:
                         cell.font = font
                         if col >= 3:
                             cell.number_format = number_format
+        
+        # 再次清除外部链接（保存前）
+        self._clear_external_links(wb)
         
         # 保存
         wb.save(str(template_path))

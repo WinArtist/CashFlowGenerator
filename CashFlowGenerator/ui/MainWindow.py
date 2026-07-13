@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
-from config import Config, Environment
+from CashFlowGenerator.config import Config, Environment
 
 # ==================== 日志配置 ====================
 LOG_FILE = PROJECT_ROOT / 'logs' / 'app.log'
@@ -90,7 +90,7 @@ class WorkerThread(QThread):
         self._start_time = time.time()
         
         try:
-            from main import CashFlowReportGenerator
+            from CashFlowGenerator.ui.MainWindow import CashFlowReportGenerator
             
             self.progress_updated.emit(5, "初始化...")
             self.log_updated.emit('▶ 开始运行')
@@ -114,16 +114,16 @@ class WorkerThread(QThread):
     def _run_single(self):
         """单文件生成模式 - 每个文件生成一个Sheet"""
         import time
-        
-        from main import CashFlowReportGenerator
-        
+    
+        from CashFlowGenerator.ui.MainWindow import CashFlowReportGenerator
+    
         config_obj = Config.get_instance(Environment.DEVELOPMENT)
         config_obj.reload_classification()
-        
+    
         classification = config_obj.data.classification
         expense_rules = classification.expense_rules
         allow_prefixes = getattr(classification, 'allow_prefixes', ALLOW_PREFIXES)
-        
+    
         self.log_updated.emit(f'📋 当前加载的支出规则: {len(expense_rules)} 条')
         for rule in expense_rules:
             keywords = []
@@ -131,76 +131,72 @@ class WorkerThread(QThread):
                 keywords.extend(cr.keywords)
             if keywords:
                 self.log_updated.emit(f'  - {rule.category}: {keywords}')
-        
+    
         self.log_updated.emit(f'✅ 白名单前缀（硬编码）: {allow_prefixes}')
         self.log_updated.emit(f'💡 所有收入统一归入"其他收入"')
-        
+    
         if self.cashflow_file:
             config_obj.file.output_dir = str(self.cashflow_file.parent)
-        
+    
         total_files = len(self.detail_paths)
         success_count = 0
         failed_files = []
-        
+    
         for idx, detail_path in enumerate(self.detail_paths, 1):
             if not self._is_running:
                 self.finished.emit(False, "已停止")
                 return
-            
+        
             detail_name = detail_path.stem
             self.file_progress.emit(idx, total_files, detail_name)
             self.log_updated.emit('')
             self.log_updated.emit('=' * 50)
             self.log_updated.emit(f'📄 处理 [{idx}/{total_files}]: {detail_path.name}')
             self.log_updated.emit('=' * 50)
-            
+        
             progress_base = 5 + int((idx - 1) / total_files * 85)
             self.progress_updated.emit(progress_base, f"处理中: {detail_name}")
-            
+        
             try:
                 generator = CashFlowReportGenerator(Environment.DEVELOPMENT)
-                
+            
                 generator.bank_name = detail_name
                 generator.period_value = detail_name
                 generator.sheet_name = detail_name
                 generator.output_filename = f"{detail_name}.xlsx"
-                
+            
                 generator.set_output_path(self.cashflow_file)
-                
+            
                 self.log_updated.emit(f'📄 Sheet名称: {detail_name}')
-                
+            
                 transactions = generator.load_transactions(detail_path)
                 self.log_updated.emit(f'📊 加载 {len(transactions)} 笔交易')
-                
+            
                 if not self._is_running:
                     self.finished.emit(False, "已停止")
                     return
-                
+            
                 if len(transactions) == 0:
                     self.log_updated.emit(f'⚠️ 没有找到交易数据，将创建空Sheet')
-                    # 不跳过，继续执行，让generator创建空Sheet
-                
+            
                 generator.transactions = transactions
-                
-                quarter = self._extract_quarter(detail_name)
-                self.log_updated.emit(f'📅 识别季度: {quarter}')
-                
-                success = generator.run_full_flow(detail_path, quarter)
-                
+            
+                success = generator.run_full_flow(detail_path)
+            
                 if success:
                     success_count += 1
                     self.log_updated.emit(f'✅ {detail_name} 处理完成')
                 else:
                     self.log_updated.emit(f'❌ {detail_name} 处理失败')
                     failed_files.append((detail_path.name, "生成失败"))
-                
+            
             except Exception as e:
                 self.log_updated.emit(f'❌ 处理失败: {str(e)}')
                 failed_files.append((detail_path.name, str(e)))
-        
+    
         elapsed = time.time() - self._start_time
         self.progress_updated.emit(100, "完成!")
-        
+    
         self.log_updated.emit('')
         self.log_updated.emit('=' * 50)
         self.log_updated.emit('📊 批量处理完成')
@@ -211,14 +207,14 @@ class WorkerThread(QThread):
                 self.log_updated.emit(f'    - {name}: {err}')
         self.log_updated.emit(f'⏱️ 总耗时: {elapsed:.1f} 秒')
         self.log_updated.emit('=' * 50)
-        
-        self.finished.emit(True, f"成功 {success_count}/{total_files} 个文件")
+    
+        self.finished.emit(True, f"成功 {success_count}/{total_files} 个文件") 
     
     def _run_summary(self):
         """汇总模式 - 所有文件汇总到汇总表"""
         import time
         
-        from main import CashFlowReportGenerator
+        from CashFlowGenerator.ui.MainWindow import CashFlowReportGenerator
         
         config_obj = Config.get_instance(Environment.DEVELOPMENT)
         config_obj.reload_classification()
@@ -245,25 +241,7 @@ class WorkerThread(QThread):
         else:
             self.finished.emit(False, "汇总失败")
     
-    def _extract_quarter(self, filename: str) -> str:
-        """从文件名提取季度"""
-        month_match = re.search(r'(\d+)月', filename)
-        if month_match:
-            month = int(month_match.group(1))
-            if month <= 3:
-                return 'Q1'
-            elif month <= 6:
-                return 'Q2'
-            elif month <= 9:
-                return 'Q3'
-            else:
-                return 'Q4'
-        
-        quarter_match = re.search(r'(Q[1-4])', filename, re.IGNORECASE)
-        if quarter_match:
-            return quarter_match.group(1).upper()
-        
-        return 'Q2'
+    
 
 
 class MainWindow(QMainWindow):

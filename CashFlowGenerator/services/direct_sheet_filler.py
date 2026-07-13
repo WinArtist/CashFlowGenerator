@@ -1,5 +1,5 @@
-# src/services/direct_sheet_filler.py
-"""直接填入工作表服务 - 优化版"""
+# src/services/direct_sheet_filler.py - 重命名，删除建行相关命名
+"""工作表填充服务"""
 
 from typing import Optional
 from pathlib import Path
@@ -11,11 +11,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import Config
+from CashFlowGenerator.config import Config
 
 
-class JianhangQ2Filler:
-    """建行Q2工作表填充器 - 优化版"""
+class SheetFiller:
+    """工作表填充器"""
     
     def __init__(self, config: Config):
         self.config = config
@@ -25,10 +25,12 @@ class JianhangQ2Filler:
             '交易时间': 2,
             '客户供应商': 19,
             '摘要': 21,
-            '余额': 18,  # R列
+            '余额': 18,
         })
     
-    def fill_quarter_data(self, template_path: str, report_data, quarter: str, source_file: str, sheet_name: str, opening_balance: Optional[Decimal] = None) -> Optional[str]:
+    def fill_sheet(self, template_path: str, report_data, source_file: str, 
+                   sheet_name: str, opening_balance: Optional[Decimal] = None) -> Optional[str]:
+        """填充工作表数据"""
         from openpyxl import load_workbook
         
         if not template_path:
@@ -38,8 +40,8 @@ class JianhangQ2Filler:
         if not template_path.exists():
             raise FileNotFoundError(f"模板文件不存在: {template_path}")
         
-        if not quarter or not sheet_name:
-            raise ValueError("季度和工作表名称不能为空")
+        if not sheet_name:
+            raise ValueError("工作表名称不能为空")
         
         wb = load_workbook(template_path)
         
@@ -48,7 +50,7 @@ class JianhangQ2Filler:
         
         ws = wb[sheet_name]
         
-        # ===== 填入期初余额到 R4 =====
+        # 填入期初余额
         if opening_balance is not None:
             try:
                 ws.cell(row=4, column=18, value=float(opening_balance))
@@ -91,7 +93,7 @@ class JianhangQ2Filler:
             return False
     
     def _should_fill_contra(self, contra_subject: str, summary: str = "") -> bool:
-        """判断是否应该填充客户/供应商列（白名单模式）"""
+        """判断是否应该填充客户/供应商列"""
         if not contra_subject:
             return False
         
@@ -112,27 +114,23 @@ class JianhangQ2Filler:
         
         contra_subject = str(contra_subject)
         
-        # ===== 1. 标准格式：应收账款_人民币户_苏州登临科技股份有限公司 =====
+        # 标准格式：应收账款_人民币户_公司名
         match = re.search(r'(?:应收|应付)(?:账款|票据)?_?(?:人民币户)?_?([^\s_]+(?:公司|有限|集团|中心|厂|店|银行))', contra_subject)
         if match:
             return match.group(1)
         
-        # ===== 2. 简单格式：应收账款_公司名 =====
         match = re.search(r'(?:应收|应付)(?:账款|票据)?_([^\s_]+(?:公司|有限|集团|中心|厂|店|银行))', contra_subject)
         if match:
             return match.group(1)
         
-        # ===== 3. 其他应付款_徐芳 / 其他应收款_朱晓福 =====
         match = re.search(r'其他应(?:收|付)款_([^\s_]+)', contra_subject)
         if match:
             return match.group(1)
         
-        # ===== 4. 直接匹配公司后缀 =====
         match = re.search(r'([^\s_]{2,20}(?:公司|有限|集团|中心|厂|店|银行))', contra_subject)
         if match:
             return match.group(1)
         
-        # ===== 5. 按_分割取最后一段 =====
         parts = contra_subject.split('_')
         if len(parts) >= 2:
             last_part = parts[-1].strip()
@@ -140,7 +138,6 @@ class JianhangQ2Filler:
                 if re.search(r'[\u4e00-\u9fa5]', last_part):
                     return last_part
         
-        # ===== 6. 提取连续的中文字符（2-20个） =====
         match = re.search(r'([\u4e00-\u9fa5]{2,20})', contra_subject)
         if match:
             return match.group(1)
@@ -157,7 +154,7 @@ class JianhangQ2Filler:
                 date_value = trans.date
             self._set_cell_value(ws, row, self.COL_INDEX.get('交易时间', 2), date_value)
         
-        # ===== 对方科目 - S列（客户/供应商）- 白名单模式 =====
+        # 客户/供应商 - S列（白名单模式）
         contra_subject = getattr(trans, 'contra_subject', "")
         description = getattr(trans, 'description', "")
         
@@ -175,16 +172,21 @@ class JianhangQ2Filler:
                 desc = desc[:47] + "..."
             self._set_cell_value(ws, row, self.COL_INDEX.get('摘要', 21), desc)
         
-        # ===== 余额 - R列 =====
+        # 余额 - R列
         if hasattr(trans, 'balance') and trans.balance is not None:
             self._set_cell_value(ws, row, self.COL_INDEX.get('余额', 18), float(trans.balance))
         
-        # ===== 收入分类 - 所有收入都填入"其他收入"列 =====
+        # 收入
         if trans.is_income:
-            # 所有收入都放入"其他收入"列（第17列）
-            self._set_cell_value(ws, row, self.COL_INDEX.get('其他收入', 17), float(trans.amount))
+            income_category = getattr(trans, 'income_category', self.config.data.classification.default_income_category)
+            col = self.COL_INDEX.get(income_category)
+            if col:
+                self._set_cell_value(ws, row, col, float(trans.amount))
+            else:
+                # 默认放到其他收入列
+                self._set_cell_value(ws, row, self.COL_INDEX.get('其他收入', 17), float(trans.amount))
         
-        # ===== 支出分类 =====
+        # 支出
         else:
             expense_category = getattr(trans, 'expense_category', None)
             if expense_category:

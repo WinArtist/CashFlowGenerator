@@ -1,5 +1,5 @@
-# src/services/aggregator.py
-"""数据聚合服务 - 纯串行版"""
+# src/services/aggregator.py - 删除季度相关逻辑
+"""数据聚合服务"""
 
 from typing import List
 from decimal import Decimal
@@ -10,11 +10,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.transaction import ClassifiedTransaction
 from models.report_data import ReportData
-from config import Config
+from CashFlowGenerator.config import Config
 
 
 class DataAggregator:
-    """数据聚合器 - 纯串行版"""
+    """数据聚合器"""
     
     def __init__(self, config: Config = None):
         self.config = config or Config.get_instance()
@@ -26,7 +26,7 @@ class DataAggregator:
         self._cache_misses = 0
     
     def aggregate(self, transactions: List) -> ReportData:
-        """聚合交易数据 - 串行处理"""
+        """聚合交易数据"""
         self.report_data = ReportData()
         self._transactions = []
         self._cache_hits = 0
@@ -36,7 +36,7 @@ class DataAggregator:
             print("⚠️ 没有交易数据需要聚合")
             return self.report_data
     
-        print(f"📝 串行处理 {len(transactions)} 笔交易...")
+        print(f"📝 处理 {len(transactions)} 笔交易...")
     
         for idx, trans in enumerate(transactions):
             if idx % 50 == 0:
@@ -76,8 +76,7 @@ class DataAggregator:
             income_cat = None
             expense_cat = None
             if trans.is_income:
-                # ===== 所有收入统一归入"其他收入" =====
-                income_cat = "其他收入"
+                income_cat = self.classification_config.default_income_category
             else:
                 expense_cat = self._classify_expense(trans)
             if len(self._category_cache) < 20000:
@@ -92,30 +91,20 @@ class DataAggregator:
             contra_subject=getattr(trans, 'contra_subject', ""),
             amount=trans.amount,
             is_income=trans.is_income,
-            income_type=getattr(trans, 'income_type', None),
             sheet_name=getattr(trans, 'sheet_name', ""),
             row_index=getattr(trans, 'row_index', -1),
-            quarter=getattr(trans, 'quarter', None),
-            quarter_confidence=getattr(trans, 'quarter_confidence', 0.0),
-            quarter_strategy=getattr(trans, 'quarter_strategy', ""),
-            quarter_matched_rule=getattr(trans, 'quarter_matched_rule', None),
-            # ===== 收入统一为"其他收入" =====
-            income_category="其他收入" if trans.is_income else income_cat,
+            balance=getattr(trans, 'balance', None),
+            income_category=self.classification_config.default_income_category if trans.is_income else income_cat,
             expense_category=expense_cat,
             classification_confidence=0.8
         )
     
-    def _classify_income(self, trans) -> str:
-        """分类收入 - 所有收入统一归入其他收入"""
-        # ===== 所有收入统一归入"其他收入" =====
-        return "其他收入"
-    
     def _classify_expense(self, trans) -> str:
-        """分类支出 - 复用 classification_config 逻辑"""
+        """分类支出"""
         contra = getattr(trans, 'contra_subject', "") or ""
         desc = trans.description or ""
         category = self.classification_config.get_category_by_contra(contra, desc, is_income=False)
-        return category if category else "管理费用_其他"
+        return category if category else self.classification_config.default_expense_category
     
     def get_column_for_category(self, category: str) -> int:
         return self.classification_config.column_mapping.get(category, None)

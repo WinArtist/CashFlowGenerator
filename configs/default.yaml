@@ -6,13 +6,16 @@ company:
   banks: []
 file:
   single_files:
-  - C:\Users\chqte\Desktop\上海银行_6月.xlsx
-  - C:\Users\chqte\Desktop\招商银行_6月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_1月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_2月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_3月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_4月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_5月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_6月.xlsx
   summary_files:
-  - C:\Users\chqte\Desktop\上海银行_1月_6月.xlsx
-  - C:\Users\chqte\Desktop\招商银行_1月_6月.xlsx
+  - C:\Users\chqte\Documents\work\weiyu\上海银行_1月_6月.xlsx
   single_cashflow_file: C:/Users/chqte/Music
-  summary_cashflow_file: C:/Users/chqte/Music/现金流表_20260709_194440.xlsx
+  summary_cashflow_file: C:/Users/chqte/Videos/现金流表_20260712_211501.xlsx
 income_rules:
 - category: 产品收入
   contra_keywords:

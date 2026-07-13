@@ -1,4 +1,6 @@
-# src/models/transaction.py
+# src/models/transaction.py - 修复版（删除 EnhancedTransaction）
+"""交易数据模型"""
+
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -7,16 +9,18 @@ from typing import Optional
 
 @dataclass
 class Transaction:
-    """基础交易"""
+    """交易数据"""
     date: datetime
     voucher: str
     description: str
     debit: Decimal
     credit: Decimal
     contra_subject: str = ""
+    sheet_name: str = ""
+    row_index: int = -1
+    balance: Optional[Decimal] = None
     amount: Decimal = Decimal(0)
     is_income: bool = False
-    income_type: Optional[str] = None
     
     def __post_init__(self):
         """计算金额和类型"""
@@ -29,28 +33,11 @@ class Transaction:
 
 
 @dataclass
-class EnhancedTransaction(Transaction):
-    """增强交易"""
-    sheet_name: str = ""
-    row_index: int = -1
-    quarter: Optional[str] = None
-    quarter_confidence: float = 0.0
-    quarter_strategy: str = ""
-    quarter_matched_rule: Optional[str] = None
-    balance: Optional[Decimal] = None  # 余额字段
-    
-    def __post_init__(self):
-        """调用父类的 __post_init__"""
-        super().__post_init__()
-
-
-@dataclass
-class ClassifiedTransaction(EnhancedTransaction):
-    """分类交易"""
+class ClassifiedTransaction(Transaction):
+    """已分类的交易"""
     income_category: Optional[str] = None
     expense_category: Optional[str] = None
     classification_confidence: float = 0.0
     
     def __post_init__(self):
-        """调用父类的 __post_init__"""
         super().__post_init__()

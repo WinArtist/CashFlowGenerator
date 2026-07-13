@@ -1,10 +1,10 @@
-# src/config.py
-"""配置管理模块 - 适配新模板，支持从YAML加载分类规则"""
+# src/config.py - 优化后的配置管理模块（删除季度相关）
+"""配置管理模块 - 支持从YAML加载分类规则"""
 
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 import yaml
 
@@ -16,54 +16,9 @@ class Environment(Enum):
     PRODUCTION = "production"
 
 
-class QuarterMappingStrategy(Enum):
-    """季度映射策略"""
-    BY_DATE = "by_date"
-    BY_MONTH_MAPPING = "by_month_mapping"
-    BY_VOUCHER_PREFIX = "by_voucher_prefix"
-    BY_SHEET_NAME = "by_sheet_name"
-    CUSTOM_RULE = "custom_rule"
-
-
-@dataclass
-class MonthMappingRule:
-    month: int
-    target_quarter: str
-    description: str = ""
-
-
-@dataclass
-class VoucherPrefixRule:
-    prefix: str
-    target_quarter: str
-    description: str = ""
-
-
-@dataclass
-class SheetNameRule:
-    keyword: str
-    target_quarter: str
-    description: str = ""
-
-
-@dataclass
-class QuarterMappingConfig:
-    strategy: QuarterMappingStrategy = QuarterMappingStrategy.BY_DATE
-    month_mapping: Dict[int, str] = field(default_factory=lambda: {
-        1: "Q1", 2: "Q1", 3: "Q1",
-        4: "Q2", 5: "Q2", 6: "Q2",
-        7: "Q3", 8: "Q3", 9: "Q3",
-        10: "Q4", 11: "Q4", 12: "Q4"
-    })
-    month_rules: List[MonthMappingRule] = field(default_factory=list)
-    voucher_rules: List[VoucherPrefixRule] = field(default_factory=list)
-    sheet_rules: List[SheetNameRule] = field(default_factory=list)
-    default_quarter: str = "Q2"
-    fuzzy_match: bool = False
-
-
 @dataclass
 class ContraSubjectRule:
+    """对方科目规则"""
     keywords: List[str] = field(default_factory=list)
     target_category: str = ""
     description: str = ""
@@ -72,6 +27,7 @@ class ContraSubjectRule:
 
 @dataclass
 class IncomeCategoryRule:
+    """收入分类规则"""
     category: str = ""
     contra_rules: List[ContraSubjectRule] = field(default_factory=list)
     summary_keywords: List[str] = field(default_factory=list)
@@ -80,13 +36,12 @@ class IncomeCategoryRule:
 
 @dataclass
 class ExpenseCategoryRule:
+    """支出分类规则"""
     category: str = ""
     contra_rules: List[ContraSubjectRule] = field(default_factory=list)
     summary_keywords: List[str] = field(default_factory=list)
     description: str = ""
 
-
-# src/config.py - 修复 ClassificationConfig
 
 @dataclass
 class ClassificationConfig:
@@ -95,11 +50,12 @@ class ClassificationConfig:
     expense_rules: List[ExpenseCategoryRule] = field(default_factory=list)
     column_mapping: Dict[str, int] = field(default_factory=dict)
     
-    # ===== 白名单前缀 =====
+    # 白名单前缀 - 用于识别应收应付类科目
     allow_prefixes: List[str] = field(default_factory=lambda: ["1122", "1123", "2202", "2203"])
     
-    # 保留但不使用的字段（向后兼容）
-    exclude_keywords: List[str] = field(default_factory=list)
+    # 默认分类
+    default_income_category: str = "其他收入"
+    default_expense_category: str = "管理费用_其他"
     
     _keyword_cache: Dict[str, str] = field(default_factory=dict, repr=False)
     _income_cache: Dict[str, str] = field(default_factory=dict, repr=False)
@@ -114,37 +70,30 @@ class ClassificationConfig:
         self._keyword_cache = {}
         self._income_cache = {}
         
-        # ===== 从 expense_rules 构建支出缓存 =====
         for rule in self.expense_rules:
             if not rule.category:
                 continue
-            # 从 contra_rules 中提取关键词
             for cr in rule.contra_rules:
                 for kw in cr.keywords:
                     if kw:
                         self._keyword_cache[kw.lower()] = rule.category
-            # 从 summary_keywords 中提取关键词
             for kw in rule.summary_keywords:
                 if kw:
                     self._keyword_cache[kw.lower()] = rule.category
         
-        # ===== 从 income_rules 构建收入缓存 =====
         for rule in self.income_rules:
             if not rule.category:
                 continue
-            # 从 contra_rules 中提取关键词
             for cr in rule.contra_rules:
                 for kw in cr.keywords:
                     if kw:
                         self._income_cache[kw.lower()] = rule.category
-            # 从 summary_keywords 中提取关键词
             for kw in rule.summary_keywords:
                 if kw:
                     self._income_cache[kw.lower()] = rule.category
         
         self._cache_built = True
         
-        # 打印缓存构建信息
         print(f"📊 支出缓存: {len(self._keyword_cache)} 条关键词映射")
         print(f"📊 收入缓存: {len(self._income_cache)} 条关键词映射")
     
@@ -159,22 +108,17 @@ class ClassificationConfig:
         contra_lower = contra_subject.lower() if contra_subject else ""
         summary_lower = summary.lower() if summary else ""
     
-        # ===== 收入匹配 =====
         if is_income:
-            # 优先匹配摘要
             if summary_lower:
                 for kw, category in self._income_cache.items():
                     if kw in summary_lower:
                         return category
-            # 再匹配对方科目
             if contra_lower:
                 for kw, category in self._income_cache.items():
                     if kw in contra_lower:
                         return category
-            # ===== 所有收入都归入"其他收入" =====
-            return "其他收入"
+            return self.default_income_category
     
-        # ===== 支出匹配 =====
         if summary_lower:
             for kw, category in self._keyword_cache.items():
                 if kw in summary_lower:
@@ -199,10 +143,6 @@ class ClassificationConfig:
         
         return False
     
-    def should_exclude_contra(self, contra_subject: str, summary: str = "") -> bool:
-        """判断是否应该排除（不填充客户/供应商列）"""
-        return not self.should_fill_contra(contra_subject, summary)
-    
     def rebuild_cache(self):
         self._cache_built = False
         self._build_cache()
@@ -212,11 +152,9 @@ class ClassificationConfig:
         if not data:
             return cls()
         
-        # ===== 解析收入规则 =====
         income_rules = []
         for rule_data in data.get('income_rules', []):
             contra_rules = []
-            # 支持两种格式：contra_rules 或 contra_keywords
             if 'contra_rules' in rule_data:
                 for cr in rule_data.get('contra_rules', []):
                     contra_rules.append(ContraSubjectRule(
@@ -240,11 +178,9 @@ class ClassificationConfig:
                 description=rule_data.get('description', '')
             ))
         
-        # ===== 解析支出规则 =====
         expense_rules = []
         for rule_data in data.get('expense_rules', []):
             contra_rules = []
-            # 支持两种格式：contra_rules 或 contra_keywords
             if 'contra_rules' in rule_data:
                 for cr in rule_data.get('contra_rules', []):
                     contra_rules.append(ContraSubjectRule(
@@ -268,62 +204,26 @@ class ClassificationConfig:
                 description=rule_data.get('description', '')
             ))
         
-        # ===== 读取白名单前缀 =====
         allow_prefixes = data.get('allow_prefixes', ["1122", "1123", "2202", "2203"])
-        
-        # ===== 读取排除关键词（保留但不再使用） =====
-        exclude_keywords = data.get('exclude_keywords', [])
-        if not exclude_keywords and 'contra_filter' in data:
-            exclude_keywords = data.get('contra_filter', {}).get('exclude_keywords', [])
         
         config = cls(
             income_rules=income_rules,
             expense_rules=expense_rules,
             column_mapping=data.get('column_mapping', {}),
-            exclude_keywords=exclude_keywords,
             allow_prefixes=allow_prefixes
         )
         config._build_cache()
         
-        # 打印加载信息
         print(f"✅ 加载了 {len(income_rules)} 条收入规则")
         print(f"✅ 加载了 {len(expense_rules)} 条支出规则")
         print(f"✅ 白名单前缀: {allow_prefixes}")
         
         return config
-    
-    def to_dict(self) -> Dict[str, Any]:
-        def rules_to_dict(rules):
-            result = []
-            for rule in rules:
-                item = {
-                    'category': rule.category,
-                    'contra_rules': [
-                        {
-                            'keywords': cr.keywords,
-                            'target_category': cr.target_category,
-                            'description': cr.description,
-                            'fuzzy': cr.fuzzy
-                        }
-                        for cr in rule.contra_rules
-                    ],
-                    'summary_keywords': rule.summary_keywords,
-                    'description': rule.description
-                }
-                result.append(item)
-            return result
-        
-        return {
-            'income_rules': rules_to_dict(self.income_rules),
-            'expense_rules': rules_to_dict(self.expense_rules),
-            'column_mapping': self.column_mapping,
-            'allow_prefixes': self.allow_prefixes,
-            'exclude_keywords': self.exclude_keywords
-        }
 
 
 @dataclass
 class FileConfig:
+    """文件配置"""
     input_dir: str = "input"
     output_dir: str = "output"
     template_dir: str = "templates"
@@ -362,6 +262,7 @@ class FileConfig:
 
 @dataclass
 class DataConfig:
+    """数据配置"""
     skip_vouchers: tuple = ("期初余额", "本期合计", "本年累计", "")
     date_column: str = "日期"
     voucher_column: str = "凭证字号"
@@ -374,15 +275,14 @@ class DataConfig:
     sheet_name_column: str = "_sheet_name"
     header_rows: int = 4
     report_year: int = 2026
-    quarter_names: List[str] = field(default_factory=lambda: ["Q1", "Q2", "Q3", "Q4"])
     decimal_places: int = 2
     validation_threshold: float = 0.01
-    quarter_mapping: QuarterMappingConfig = field(default_factory=QuarterMappingConfig)
     classification: ClassificationConfig = field(default_factory=ClassificationConfig)
 
 
 @dataclass
 class LogConfig:
+    """日志配置"""
     level: str = "INFO"
     format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     max_bytes: int = 10 * 1024 * 1024
@@ -391,7 +291,7 @@ class LogConfig:
 
 @dataclass
 class UIConfig:
-    quarter_options: List[str] = field(default_factory=lambda: ["Q1", "Q2", "Q3", "Q4"])
+    """UI配置"""
     month_options: List[str] = field(default_factory=lambda: [
         "1月", "2月", "3月", "4月", "5月", "6月", 
         "7月", "8月", "9月", "10月", "11月", "12月"
@@ -404,6 +304,7 @@ class UIConfig:
 
 
 class Config:
+    """全局配置单例"""
     _instance: Optional['Config'] = None
     _environment: Environment = Environment.DEVELOPMENT
     
@@ -441,9 +342,7 @@ class Config:
         config_path = Path(__file__).parent.parent / 'config.yaml'
         if not config_path.exists():
             print("⚠️ config.yaml 不存在，使用默认配置")
-            # 设置默认白名单
             self.data.classification = ClassificationConfig()
-            self.data.classification.allow_prefixes = ["1122", "1123", "2202", "2203"]
             return
     
         try:
@@ -454,42 +353,19 @@ class Config:
             print("📂 从 config.yaml 加载分类规则")
             print("=" * 60)
         
-            income_rules_data = yaml_config.get('income_rules', [])
-            expense_rules_data = yaml_config.get('expense_rules', [])
-            column_mapping = yaml_config.get('column_mapping', {})
-            
-            # ===== 读取白名单前缀 =====
-            allow_prefixes = yaml_config.get('allow_prefixes', ["1122", "1123", "2202", "2203"])
-        
-            print(f"📊 收入规则: {len(income_rules_data)} 条")
-            print(f"📊 支出规则: {len(expense_rules_data)} 条")
-        
-            if expense_rules_data:
-                print("📋 支出规则:")
-                for i, rule in enumerate(expense_rules_data):
-                    category = rule.get('category', '未知')
-                    keywords = rule.get('contra_keywords', [])
-                    print(f"  {i+1}. {category}: {keywords}")
-            else:
-                print("📋 支出规则: (无)")
-        
-            print(f"✅ 白名单前缀: {allow_prefixes}")
-            print(f"💡 只有对方科目以 {allow_prefixes} 开头的交易才会填充客户/供应商列")
-            print("=" * 60)
-        
             classification_dict = {
-                'income_rules': income_rules_data,
-                'expense_rules': expense_rules_data,
-                'column_mapping': column_mapping,
-                'allow_prefixes': allow_prefixes
+                'income_rules': yaml_config.get('income_rules', []),
+                'expense_rules': yaml_config.get('expense_rules', []),
+                'column_mapping': yaml_config.get('column_mapping', {}),
+                'allow_prefixes': yaml_config.get('allow_prefixes', ["1122", "1123", "2202", "2203"])
             }
         
             self.data.classification = ClassificationConfig.from_dict(classification_dict)
+            print("=" * 60)
         
         except Exception as e:
             print(f"⚠️ 加载分类配置失败: {e}")
             self.data.classification = ClassificationConfig()
-            self.data.classification.allow_prefixes = ["1122", "1123", "2202", "2203"]
     
     def reload_classification(self):
         self._load_classification_from_yaml()
