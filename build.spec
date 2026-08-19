@@ -86,7 +86,6 @@ hiddenimports = [
     'services.reporter',
     'services.direct_sheet_filler',
     'services.create_blank_template',
-    'services.quarter_mapper',
     'services.summary_service',
     'strategies',
     'strategies.classification_strategy',
